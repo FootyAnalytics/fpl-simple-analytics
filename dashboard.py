@@ -144,6 +144,11 @@ sort_column = st.sidebar.selectbox(
 
 sort_order = st.sidebar.radio("Sort Order", ["Descending", "Ascending"])
 
+selected_player = st.sidebar.selectbox(
+    "View Player Details",
+    ["None"] + sorted(players["web_name"].unique())
+)
+
 # =========================================================
 # FILTER DATA
 # =========================================================
@@ -266,6 +271,7 @@ st.dataframe(
 
 
 st.markdown("</div>", unsafe_allow_html=True)
+
 
 
 
