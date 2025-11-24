@@ -181,25 +181,31 @@ table = filtered[[
     "Position",
     "Points (GW Range)",
     "Current Price",
-    "Points Per Million",
-    "Selected By %",
-    "Template Value",
-    "Differential Value"
-]]
+    "Selected By %"
+]].rename(columns={"web_name": "Player"})
 
-table = table.rename(columns={"web_name": "Player"})
+# --- Recalculate all dynamic metrics based on GW range ---
+# Points per million now depends on the GW-range points
+table["Points Per Million"] = table["Points (GW Range)"] / table["Current Price"]
 
-# Round values
+# Convert Selected By % from display format into decimal
+sel_decimal = table["Selected By %"] / 100
+
+table["Template Value"] = table["Points Per Million"] * sel_decimal
+table["Differential Value"] = table["Points Per Million"] * (1 - sel_decimal)
+
+# Round values properly
 round_cols = [
     "Current Price",
+    "Points (GW Range)",
     "Points Per Million",
     "Selected By %",
     "Template Value",
     "Differential Value"
 ]
 
-for col in round_cols:
-    table[col] = table[col].round(2)
+table[round_cols] = table[round_cols].round(2)
+
 
 # Sort the table
 ascending = (sort_order == "Ascending")
@@ -217,4 +223,5 @@ st.subheader("📊 Player Value Table")
 st.dataframe(table, use_container_width=True, hide_index=True)
 
 st.markdown("</div>", unsafe_allow_html=True)
+
 
