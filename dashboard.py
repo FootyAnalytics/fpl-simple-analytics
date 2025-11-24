@@ -154,6 +154,10 @@ selected_player = st.sidebar.selectbox(
     key="selected_player"
 )
 
+if selected_player != "None":
+    if st.sidebar.button("Reset Player View"):
+        st.session_state.selected_player = "None"
+        st.rerun()
 
 # =========================================================
 # FILTER DATA
@@ -327,6 +331,7 @@ st.dataframe(
 
 
 st.markdown("</div>", unsafe_allow_html=True)
+
 
 
 
