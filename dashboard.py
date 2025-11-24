@@ -133,7 +133,6 @@ gw_start, gw_end = st.sidebar.slider(
     value=(min_gw, max_gw),
 )
 
-# Sorting dropdown
 sort_column = st.sidebar.selectbox(
     "Sort Table By",
     [
@@ -148,16 +147,21 @@ sort_column = st.sidebar.selectbox(
 
 sort_order = st.sidebar.radio("Sort Order", ["Descending", "Ascending"])
 
-selected_player = st.sidebar.selectbox(
+
+# --- PLAYER DETAIL SELECTOR WITH RESET ---
+st.sidebar.selectbox(
     "View Player Details",
     ["None"] + sorted(players["web_name"].unique()),
     key="selected_player"
 )
 
+selected_player = st.session_state.selected_player
+
 if selected_player != "None":
     if st.sidebar.button("Reset Player View"):
         st.session_state.selected_player = "None"
         st.rerun()
+
 
 # =========================================================
 # FILTER DATA
@@ -331,6 +335,7 @@ st.dataframe(
 
 
 st.markdown("</div>", unsafe_allow_html=True)
+
 
 
 
