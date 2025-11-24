@@ -4,15 +4,16 @@ import json
 import base64
 import os
 
-# =========================================================
-# SESSION STATE DEFAULTS
-# =========================================================
+# -----------------------------------------
+# Session State Defaults
+# -----------------------------------------
 if "selected_player" not in st.session_state:
     st.session_state.selected_player = "None"
 
-# =========================================================
+
+# -----------------------------------------
 # BACKGROUND IMAGE
-# =========================================================
+# -----------------------------------------
 def set_background(image_file):
     with open(image_file, "rb") as f:
         data = f.read()
@@ -49,12 +50,14 @@ def set_background(image_file):
         unsafe_allow_html=True
     )
 
-IMAGE_PATH = "bg1.png"
+
+IMAGE_PATH = "bg1.png"   # Ensure bg1.png exists in repo root
 set_background(IMAGE_PATH)
 
-# =========================================================
+
+# -----------------------------------------
 # LOAD LOCAL CACHE FILES
-# =========================================================
+# -----------------------------------------
 CACHE_DIR = "cache"
 PLAYERS_FILE = os.path.join(CACHE_DIR, "players.json")
 WEEKLY_FILE = os.path.join(CACHE_DIR, "weekly.json")
@@ -62,7 +65,6 @@ WEEKLY_FILE = os.path.join(CACHE_DIR, "weekly.json")
 
 @st.cache_data
 def load_players():
-    """Load players.json (bootstrap-static format)."""
     with open(PLAYERS_FILE, "r") as f:
         data = json.load(f)
 
@@ -73,27 +75,21 @@ def load_players():
 
     df = df.merge(teams, on="team", how="left")
 
-    # Map positions
+    # Position map
     pos_map = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
     df["Position"] = df["element_type"].map(pos_map)
 
-    # Convert cost to real price
+    # Pricing
     df["Current Price"] = df["now_cost"] / 10
-
-    # Points per million (season total – we’ll override per GW range later)
     df["Points Per Million"] = df["total_points"] / df["Current Price"]
 
-    # Convert selected % to decimal and display %
-    df["Selected By (Decimal)"] = pd.to_numeric(
-        df["selected_by_percent"], errors="coerce"
-    ) / 100
-    df["Selected By %"] = df["Selected By (Decimal)"] * 100  # For display
+    # Selection %
+    df["Selected By (Decimal)"] = pd.to_numeric(df["selected_by_percent"], errors="coerce") / 100
+    df["Selected By %"] = df["Selected By (Decimal)"] * 100
 
-    # Template & Differential values (season-based, overridden later for GW range)
+    # Template & differential
     df["Template Value"] = df["Points Per Million"] * df["Selected By (Decimal)"]
-    df["Differential Value"] = df["Points Per Million"] * (
-        1 - df["Selected By (Decimal)"]
-    )
+    df["Differential Value"] = df["Points Per Million"] * (1 - df["Selected By (Decimal)"])
 
     return df
 
@@ -107,9 +103,10 @@ def load_weekly():
 players = load_players()
 weekly = load_weekly()
 
-# =========================================================
-# PREP WEEKLY RANGE (for slider)
-# =========================================================
+
+# -----------------------------------------
+# BUILD WEEKLY DF FOR SLIDER LIMITS
+# -----------------------------------------
 weekly_df = pd.concat(
     [pd.DataFrame(v) for v in weekly.values()],
     ignore_index=True
@@ -118,9 +115,10 @@ weekly_df = pd.concat(
 min_gw = int(weekly_df["round"].min())
 max_gw = int(weekly_df["round"].max())
 
-# =========================================================
-# SIDEBAR FILTERS (FORM TO PREVENT WIDGET TREE COLLISIONS)
-# =========================================================
+
+# -----------------------------------------
+# SIDEBAR FILTERS (FIXED WITH A FORM)
+# -----------------------------------------
 with st.sidebar.form("filters_form", clear_on_submit=False):
 
     st.header("🔍 Filters")
@@ -170,12 +168,10 @@ with st.sidebar.form("filters_form", clear_on_submit=False):
         key="selected_player"
     )
 
-    # -----------------------------
-    # RESET BUTTON THAT ALWAYS RENDERS
-    # -----------------------------
+    # Always visible reset button
     reset_clicked = st.form_submit_button("🔄 Reset All Filters")
 
-# Reset after form submit
+# Reset state after form submission
 if reset_clicked:
     st.session_state.team_filter = "All Teams"
     st.session_state.position_filter = "All"
@@ -186,20 +182,21 @@ if reset_clicked:
     st.rerun()
 
 
-# =========================================================
-# FILTER DATA
-# =========================================================
+# -----------------------------------------
+# FILTER BASE TABLE
+# -----------------------------------------
 filtered = players.copy()
 
-if team_filter != "All Teams":
-    filtered = filtered[filtered["Team"] == team_filter]
+if st.session_state.team_filter != "All Teams":
+    filtered = filtered[filtered["Team"] == st.session_state.team_filter]
 
-if position_filter != "All":
-    filtered = filtered[filtered["Position"] == position_filter]
+if st.session_state.position_filter != "All":
+    filtered = filtered[filtered["Position"] == st.session_state.position_filter]
 
-# =========================================================
-# GW RANGE POINT CALCULATION
-# =========================================================
+
+# -----------------------------------------
+# GAMEWEEK-RANGE POINT CALCULATION
+# -----------------------------------------
 def get_points_for_range(player_id, gw1, gw2):
     history = weekly.get(str(player_id), [])
     if not history:
@@ -210,13 +207,14 @@ def get_points_for_range(player_id, gw1, gw2):
 
 
 filtered["Points (GW Range)"] = filtered.apply(
-    lambda row: get_points_for_range(row["id"], gw_start, gw_end),
+    lambda row: get_points_for_range(row["id"], st.session_state.gw_slider[0], st.session_state.gw_slider[1]),
     axis=1
 )
 
-# =========================================================
-# FINAL TABLE FORMAT (GW RANGE-BASED METRICS)
-# =========================================================
+
+# -----------------------------------------
+# FINAL TABLE
+# -----------------------------------------
 table = filtered[[
     "web_name",
     "Team",
@@ -226,14 +224,14 @@ table = filtered[[
     "Selected By %"
 ]].rename(columns={"web_name": "Player"})
 
-# Recalculate all value metrics based on GW-range points
+# Recalculate dynamic metrics
 table["Points Per Million"] = table["Points (GW Range)"] / table["Current Price"]
 
 sel_decimal = table["Selected By %"] / 100
-
 table["Template Value"] = table["Points Per Million"] * sel_decimal
 table["Differential Value"] = table["Points Per Million"] * (1 - sel_decimal)
 
+# Round numbers
 round_cols = [
     "Current Price",
     "Points (GW Range)",
@@ -245,67 +243,61 @@ round_cols = [
 
 table[round_cols] = table[round_cols].round(2)
 
-# Sort the table
-ascending = (sort_order == "Ascending")
-table = table.sort_values(by=sort_column, ascending=ascending)
+# Sorting
+ascending = (st.session_state.sort_order == "Ascending")
+table = table.sort_values(by=st.session_state.sort_column, ascending=ascending)
 
-# =========================================================
+
+# -----------------------------------------
 # PLAYER DETAIL PANEL
-# =========================================================
-if selected_player != "None":
+# -----------------------------------------
+if st.session_state.selected_player != "None":
 
-    st.subheader(f"📌 Detailed FPL Breakdown — {selected_player}")
+    player_name = st.session_state.selected_player
+    st.subheader(f"📌 Detailed FPL Breakdown — {player_name}")
 
-    # Get player ID
-    pid = int(players[players["web_name"] == selected_player]["id"].iloc[0])
+    pid = int(players[players["web_name"] == player_name]["id"].iloc[0])
     history = weekly.get(str(pid), [])
 
     if history:
         df_hist = pd.DataFrame(history)
 
-        # Season summary
         st.markdown("### 🔍 Season Summary")
-        st.write(
-            players[players["web_name"] == selected_player][[
-                "Team", "Position", "Current Price", "Selected By %"
-            ]]
-        )
+        st.write(players[players["web_name"] == player_name][[
+            "Team", "Position", "Current Price", "Selected By %"
+        ]])
 
-        # Points breakdown table
         st.markdown("### 📊 Points Breakdown by Gameweek")
-        st.dataframe(
-            df_hist[[
-                "round",
-                "total_points",
-                "goals_scored",
-                "assists",
-                "clean_sheets",
-                "bonus",
-                "minutes",
-                "expected_goals",
-                "expected_assists",
-                "expected_goal_involvements"
-            ]].sort_values("round"),
-            use_container_width=True
-        )
+        st.dataframe(df_hist[[
+            "round",
+            "total_points",
+            "goals_scored",
+            "assists",
+            "clean_sheets",
+            "bonus",
+            "minutes",
+            "expected_goals",
+            "expected_assists",
+            "expected_goal_involvements"
+        ]].sort_values("round"), use_container_width=True)
 
-        # Points per GW chart
         import plotly.express as px
         fig = px.line(
             df_hist,
             x="round",
             y="total_points",
             markers=True,
-            title=f"Points per GW — {selected_player}",
+            title=f"Points per GW — {player_name}",
         )
         st.plotly_chart(fig, use_container_width=True)
 
     else:
         st.info("No weekly data available for this player.")
 
-# =========================================================
+
+# -----------------------------------------
 # PAGE CONTENT
-# =========================================================
+# -----------------------------------------
 st.markdown("<div class='main-container'>", unsafe_allow_html=True)
 
 st.title("🔥 FPL Analytics Dashboard")
@@ -317,45 +309,16 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
     column_config={
-        "Player": st.column_config.TextColumn(
-            "Player",
-            help="Player’s short name (web_name from FPL API)"
-        ),
-        "Team": st.column_config.TextColumn(
-            "Team",
-            help="Premier League team"
-        ),
-        "Position": st.column_config.TextColumn(
-            "Pos",
-            help="GK, DEF, MID, or FWD"
-        ),
-        "Points (GW Range)": st.column_config.NumberColumn(
-            "Points (GW Range)",
-            help="Total FPL points earned by the player between selected gameweeks"
-        ),
-        "Current Price": st.column_config.NumberColumn(
-            "Price (£m)",
-            help="Player’s cost in millions (FPL now_cost / 10)"
-        ),
-        "Points Per Million": st.column_config.NumberColumn(
-            "PPM",
-            help="Points (GW Range) divided by current price. A key measure of value."
-        ),
-        "Selected By %": st.column_config.NumberColumn(
-            "Selected %",
-            help="Percentage of FPL managers who own this player"
-        ),
-        "Template Value": st.column_config.NumberColumn(
-            "Template Value",
-            help="PPM × Selected %. Higher = template pick"
-        ),
-        "Differential Value": st.column_config.NumberColumn(
-            "Differential Value",
-            help="PPM × (1 – Selected %). Higher = differential pick"
-        ),
+        "Player": st.column_config.TextColumn("Player"),
+        "Team": st.column_config.TextColumn("Team"),
+        "Position": st.column_config.TextColumn("Position"),
+        "Points (GW Range)": st.column_config.NumberColumn("Points (GW Range)"),
+        "Current Price": st.column_config.NumberColumn("Price (£m)"),
+        "Points Per Million": st.column_config.NumberColumn("PPM"),
+        "Selected By %": st.column_config.NumberColumn("Selected %"),
+        "Template Value": st.column_config.NumberColumn("Template Value"),
+        "Differential Value": st.column_config.NumberColumn("Differential Value"),
     }
 )
 
 st.markdown("</div>", unsafe_allow_html=True)
-
-
