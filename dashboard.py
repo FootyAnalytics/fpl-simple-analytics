@@ -5,6 +5,10 @@ import requests
 import base64
 import os
 
+if "selected_player" not in st.session_state:
+    st.session_state.selected_player = "None"
+
+
 # =========================================================
 # BACKGROUND IMAGE
 # =========================================================
@@ -321,6 +325,7 @@ st.dataframe(
 
 
 st.markdown("</div>", unsafe_allow_html=True)
+
 
 
 
