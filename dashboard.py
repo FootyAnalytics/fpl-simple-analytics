@@ -278,44 +278,9 @@ if selected_player != "None":
         if df_range.empty:
             st.info(f"No games for {player_name} between GW {gw_start} and {gw_end}.")
         else:
-            # ---- GW Range Summary ----
-            total_points_range = df_range["total_points"].sum()
-            st.markdown("### 🔍 GW-Range Summary")
-            st.write(
-                pd.DataFrame(
-                    {
-                        "Team": [player_row["Team"]],
-                        "Position": [position],
-                        "Current Price": [round(player_row["Current Price"], 2)],
-                        "Selected By %": [round(player_row["Selected By %"], 2)],
-                        f"Total Points (GW {gw_start}-{gw_end})": [int(total_points_range)],
-                    }
-                )
-            )
-
-            # ---- Points Breakdown by Gameweek (GW range only) ----
-            st.markdown(f"### 📊 Points Breakdown by Gameweek (GW {gw_start}–{gw_end})")
-            st.dataframe(
-                df_range[[
-                    "round",
-                    "total_points",
-                    "goals_scored",
-                    "assists",
-                    "clean_sheets",
-                    "goals_conceded",
-                    "bonus",
-                    "minutes",
-                    "yellow_cards",
-                    "red_cards",
-                    "saves",
-                    "expected_goals",
-                    "expected_assists",
-                    "expected_goal_involvements",
-                ]].sort_values("round"),
-                use_container_width=True,
-            )
-
             # ---- Aggregate Stats for GW Range ----
+            total_points_range = df_range["total_points"].sum()
+
             goals = df_range["goals_scored"].sum()
             assists = df_range["assists"].sum()
             clean_sheets = df_range["clean_sheets"].sum()
@@ -327,24 +292,44 @@ if selected_player != "None":
             red_cards = df_range["red_cards"].sum()
             saves = df_range["saves"].sum()
             bonus = df_range["bonus"].sum()
+            def_contrib = df_range["defensive_contribution"].sum()
             minutes_series = df_range["minutes"]
 
             apps_60 = ((minutes_series >= 60)).sum()
             apps_sub = ((minutes_series > 0) & (minutes_series < 60)).sum()
 
             # ---- FPL Scoring Rules ----
-            if position in ["GK", "DEF"]:
+            # Goals
+            if position == "GK":
+                goal_points_per = 10
+            elif position == "DEF":
                 goal_points_per = 6
-                cs_points_per = 4
-                gc_points = -(goals_conceded // 2)  # -1 per 2 conceded
             elif position == "MID":
                 goal_points_per = 5
-                cs_points_per = 1
-                gc_points = 0
             else:  # FWD
                 goal_points_per = 4
+
+            # Clean sheet points
+            if position in ["GK", "DEF"]:
+                cs_points_per = 4
+            elif position == "MID":
+                cs_points_per = 1
+            else:
                 cs_points_per = 0
+
+            # Goals conceded
+            if position in ["GK", "DEF"]:
+                gc_points = -1 * (goals_conceded // 2)
+            else:
                 gc_points = 0
+
+            # Defensive contributions
+            if position == "DEF":
+                def_points = (def_contrib // 10) * 2
+            elif position in ["MID", "FWD"]:
+                def_points = (def_contrib // 12) * 2
+            else:
+                def_points = 0  # GK
 
             assists_points_per = 3
             minutes_points = apps_60 * 2 + apps_sub * 1
@@ -364,7 +349,7 @@ if selected_player != "None":
             pm_points = -2 * pens_missed
             bonus_points = bonus
 
-            # Build breakdown table
+            # Build breakdown table with internal detail
             rows = []
 
             rows.append({
@@ -397,6 +382,7 @@ if selected_player != "None":
                 "Points per Event": 1,
                 "Total Points": int(apps_sub * 1),
             })
+
             if position == "GK":
                 rows.append({
                     "Category": "Saves",
@@ -404,6 +390,7 @@ if selected_player != "None":
                     "Points per Event": "1 per 3",
                     "Total Points": int(saves_points),
                 })
+
             if position in ["GK", "DEF"]:
                 rows.append({
                     "Category": "Goals Conceded",
@@ -411,6 +398,18 @@ if selected_player != "None":
                     "Points per Event": "-1 per 2",
                     "Total Points": int(gc_points),
                 })
+
+            # Defensive contributions row
+            rows.append({
+                "Category": "Defensive Contributions",
+                "Count": int(def_contrib),
+                "Points per Event": (
+                    "2 per 10" if position == "DEF" else
+                    ("2 per 12" if position in ["MID", "FWD"] else "0")
+                ),
+                "Total Points": int(def_points),
+            })
+
             rows.append({
                 "Category": "Bonus",
                 "Count": int(bonus),
@@ -450,30 +449,118 @@ if selected_player != "None":
 
             breakdown_df = pd.DataFrame(rows)
 
-            # Only keep rows that actually contributed something
-            breakdown_df = breakdown_df[breakdown_df["Count"] != 0].reset_index(drop=True)
+            # Keep categories that actually contributed points or had non-zero counts
+            breakdown_df = breakdown_df[
+                (breakdown_df["Total Points"] != 0) | (breakdown_df["Count"] != 0)
+            ].reset_index(drop=True)
 
             calc_total = breakdown_df["Total Points"].sum()
 
+            # ---- FPL Points Contribution (moved ABOVE GW breakdown) ----
             st.markdown(f"### 🧮 FPL Points Contribution (GW {gw_start}–{gw_end})")
-            st.write(f"**Total from breakdown:** {int(calc_total)} points")
-            st.write(f"**Total from API (sum of total_points):** {int(total_points_range)} points")
+
+            # Build display version without Count / Points per Event
+            if total_points_range > 0:
+                display_df = breakdown_df[["Category", "Total Points"]].copy()
+                display_df["Percentage"] = (
+                    display_df["Total Points"] / total_points_range * 100
+                ).round(1)
+            else:
+                display_df = breakdown_df[["Category", "Total Points"]].copy()
+                display_df["Percentage"] = 0.0
+
+            st.write(
+                f"**Total from breakdown:** {int(calc_total)} points &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"**Total from API (sum of total_points):** {int(total_points_range)} points"
+            )
 
             st.dataframe(
-                breakdown_df,
+                display_df,
                 use_container_width=True,
+                hide_index=True,
             )
 
             # ---- Bar Chart: Points by Category ----
             st.markdown("### 📈 Points Contribution by Category")
-            if not breakdown_df.empty:
+            if not display_df.empty:
                 fig_bar = px.bar(
-                    breakdown_df,
+                    display_df,
                     x="Category",
                     y="Total Points",
                     title=f"Points Contribution (GW {gw_start}–{gw_end}) — {player_name}",
                 )
                 st.plotly_chart(fig_bar, use_container_width=True)
+
+            # ---- GW-Range Summary (no blank index) ----
+            st.markdown("### 🔍 GW-Range Summary")
+            summary_df = pd.DataFrame(
+                {
+                    "Team": [player_row["Team"]],
+                    "Position": [position],
+                    "Current Price": [round(player_row["Current Price"], 2)],
+                    "Selected By %": [round(player_row["Selected By %"], 2)],
+                    f"Total Points (GW {gw_start}-{gw_end})": [int(total_points_range)],
+                }
+            )
+            st.dataframe(summary_df, hide_index=True, use_container_width=True)
+
+            # ---- Points Breakdown by Gameweek (GW range only) ----
+            st.markdown(f"### 📊 Points Breakdown by Gameweek (GW {gw_start}–{gw_end})")
+
+            # Base columns
+            base_cols = [
+                "round",
+                "total_points",
+                "goals_scored",
+                "assists",
+                "clean_sheets",
+                "goals_conceded",
+                "bonus",
+                "minutes",
+                "yellow_cards",
+                "red_cards",
+                "saves",
+            ]
+
+            # Filter to available columns (defensive safety)
+            base_cols = [c for c in base_cols if c in df_range.columns]
+            breakdown_view = df_range[base_cols].copy()
+
+            # Conditional column visibility
+            if position != "GK" and "saves" in breakdown_view.columns:
+                breakdown_view = breakdown_view.drop(columns=["saves"])
+
+            if position not in ["GK", "DEF", "MID"]:
+                # FWD: remove defensive clean sheet & GC columns
+                for c in ["clean_sheets", "goals_conceded"]:
+                    if c in breakdown_view.columns:
+                        breakdown_view = breakdown_view.drop(columns=[c])
+            else:
+                # MID: no goals_conceded penalties, but you wanted column visible;
+                # keep as is for GK/DEF/MID
+                pass
+
+            # Rename columns
+            rename_map = {
+                "round": "Gameweek",
+                "total_points": "Points",
+                "goals_scored": "Goals",
+                "assists": "Assists",
+                "clean_sheets": "Clean Sheets",
+                "goals_conceded": "Goals Conceded",
+                "bonus": "Bonus",
+                "minutes": "Minutes",
+                "yellow_cards": "Yellow Cards",
+                "red_cards": "Red Cards",
+                "saves": "Saves",
+            }
+            breakdown_view = breakdown_view.rename(columns=rename_map)
+
+            st.dataframe(
+                breakdown_view.sort_values("Gameweek"),
+                use_container_width=True,
+                hide_index=True,
+            )
 
             # ---- Line Chart: Points per GW (range only) ----
             st.markdown("### 📉 Points per Gameweek (GW Range)")
