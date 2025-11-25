@@ -119,11 +119,24 @@ max_gw = int(weekly_df["round"].max())
 
 st.sidebar.title("🔍 Filters")
 
-# --- RESET BUTTON MUST COME FIRST ---
+# RESET BEFORE WIDGETS ARE CREATED
+if "reset_triggered" not in st.session_state:
+    st.session_state.reset_triggered = False
+
 if st.sidebar.button("🔄 Reset All Filters"):
-    st.session_state.clear()
+    st.session_state.reset_triggered = True
+    st.rerun()
+
+if st.session_state.reset_triggered:
+    st.session_state.team_filter = "All Teams"
+    st.session_state.position_filter = "All"
+    st.session_state.gw_slider = (min_gw, max_gw)
+    st.session_state.sort_column = "Points (GW Range)"
+    st.session_state.sort_order = "Descending"
     st.session_state.selected_player = "None"
-    st.experimental_rerun()
+    st.session_state.reset_triggered = False
+    st.rerun()
+
 
 # Now safely create all widgets
 team_filter = st.sidebar.selectbox(
@@ -314,6 +327,7 @@ st.dataframe(
 )
 
 st.markdown("</div>", unsafe_allow_html=True)
+
 
 
 
