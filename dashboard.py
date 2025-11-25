@@ -3,6 +3,7 @@ import pandas as pd
 import json
 import base64
 import os
+import plotly.express as px
 
 # -----------------------------------------
 # BACKGROUND IMAGE
@@ -83,7 +84,7 @@ def load_players():
     ) / 100
     df["Selected By %"] = df["Selected By (Decimal)"] * 100
 
-    # Template & differential (season-based)
+    # Template & differential (season-based baseline)
     df["Template Value"] = df["Points Per Million"] * df["Selected By (Decimal)"]
     df["Differential Value"] = df["Points Per Million"] * (
         1 - df["Selected By (Decimal)"]
@@ -114,19 +115,20 @@ max_gw = int(weekly_df["round"].max())
 
 
 # -----------------------------------------
-# SIDEBAR FILTERS + RESET BUTTON (FIXED ORDER)
+# SIDEBAR FILTERS + RESET LOGIC
 # -----------------------------------------
-
 st.sidebar.title("🔍 Filters")
 
-# RESET BEFORE WIDGETS ARE CREATED
+# Reset flag in session state
 if "reset_triggered" not in st.session_state:
     st.session_state.reset_triggered = False
 
+# 🔄 Reset button FIRST, before widgets
 if st.sidebar.button("🔄 Reset All Filters"):
     st.session_state.reset_triggered = True
     st.rerun()
 
+# If reset was triggered, reset all filter-related state and rerun
 if st.session_state.reset_triggered:
     st.session_state.team_filter = "All Teams"
     st.session_state.position_filter = "All"
@@ -136,7 +138,6 @@ if st.session_state.reset_triggered:
     st.session_state.selected_player = "None"
     st.session_state.reset_triggered = False
     st.rerun()
-
 
 # Now safely create all widgets
 team_filter = st.sidebar.selectbox(
@@ -183,6 +184,7 @@ selected_player = st.sidebar.selectbox(
     ["None"] + sorted(players["web_name"].unique()),
     key="selected_player"
 )
+
 
 # -----------------------------------------
 # FILTER BASE TABLE
@@ -251,50 +253,238 @@ table = table.sort_values(by=sort_column, ascending=ascending)
 
 
 # -----------------------------------------
-# PLAYER DETAIL PANEL
+# PLAYER DETAIL PANEL (GW-RANGE BREAKDOWN)
 # -----------------------------------------
 if selected_player != "None":
 
     player_name = selected_player
-    st.subheader(f"📌 Detailed FPL Breakdown — {player_name}")
+    st.subheader(f"📌 Detailed FPL Breakdown — {player_name} (GW {gw_start}–{gw_end})")
 
-    pid = int(players[players["web_name"] == player_name]["id"].iloc[0])
+    # Get player row & ID
+    player_row = players[players["web_name"] == player_name].iloc[0]
+    pid = int(player_row["id"])
+    position = player_row["Position"]
+
     history = weekly.get(str(pid), [])
 
     if history:
         df_hist = pd.DataFrame(history)
 
-        st.markdown("### 🔍 Season Summary")
-        st.write(players[players["web_name"] == player_name][[
-            "Team", "Position", "Current Price", "Selected By %"
-        ]])
+        # Restrict to GW range
+        df_range = df_hist[
+            (df_hist["round"] >= gw_start) & (df_hist["round"] <= gw_end)
+        ].copy()
 
-        st.markdown("### 📊 Points Breakdown by Gameweek")
-        st.dataframe(
-            df_hist[[
-                "round",
-                "total_points",
-                "goals_scored",
-                "assists",
-                "clean_sheets",
-                "bonus",
-                "minutes",
-                "expected_goals",
-                "expected_assists",
-                "expected_goal_involvements"
-            ]].sort_values("round"),
-            use_container_width=True
-        )
+        if df_range.empty:
+            st.info(f"No games for {player_name} between GW {gw_start} and {gw_end}.")
+        else:
+            # ---- GW Range Summary ----
+            total_points_range = df_range["total_points"].sum()
+            st.markdown("### 🔍 GW-Range Summary")
+            st.write(
+                pd.DataFrame(
+                    {
+                        "Team": [player_row["Team"]],
+                        "Position": [position],
+                        "Current Price": [round(player_row["Current Price"], 2)],
+                        "Selected By %": [round(player_row["Selected By %"], 2)],
+                        f"Total Points (GW {gw_start}-{gw_end})": [int(total_points_range)],
+                    }
+                )
+            )
 
-        import plotly.express as px
-        fig = px.line(
-            df_hist,
-            x="round",
-            y="total_points",
-            markers=True,
-            title=f"Points per GW — {player_name}",
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            # ---- Points Breakdown by Gameweek (GW range only) ----
+            st.markdown(f"### 📊 Points Breakdown by Gameweek (GW {gw_start}–{gw_end})")
+            st.dataframe(
+                df_range[[
+                    "round",
+                    "total_points",
+                    "goals_scored",
+                    "assists",
+                    "clean_sheets",
+                    "goals_conceded",
+                    "bonus",
+                    "minutes",
+                    "yellow_cards",
+                    "red_cards",
+                    "saves",
+                    "expected_goals",
+                    "expected_assists",
+                    "expected_goal_involvements",
+                ]].sort_values("round"),
+                use_container_width=True,
+            )
+
+            # ---- Aggregate Stats for GW Range ----
+            goals = df_range["goals_scored"].sum()
+            assists = df_range["assists"].sum()
+            clean_sheets = df_range["clean_sheets"].sum()
+            goals_conceded = df_range["goals_conceded"].sum()
+            own_goals = df_range["own_goals"].sum()
+            pens_saved = df_range["penalties_saved"].sum()
+            pens_missed = df_range["penalties_missed"].sum()
+            yellow_cards = df_range["yellow_cards"].sum()
+            red_cards = df_range["red_cards"].sum()
+            saves = df_range["saves"].sum()
+            bonus = df_range["bonus"].sum()
+            minutes_series = df_range["minutes"]
+
+            apps_60 = ((minutes_series >= 60)).sum()
+            apps_sub = ((minutes_series > 0) & (minutes_series < 60)).sum()
+
+            # ---- FPL Scoring Rules ----
+            if position in ["GK", "DEF"]:
+                goal_points_per = 6
+                cs_points_per = 4
+                gc_points = -(goals_conceded // 2)  # -1 per 2 conceded
+            elif position == "MID":
+                goal_points_per = 5
+                cs_points_per = 1
+                gc_points = 0
+            else:  # FWD
+                goal_points_per = 4
+                cs_points_per = 0
+                gc_points = 0
+
+            assists_points_per = 3
+            minutes_points = apps_60 * 2 + apps_sub * 1
+            goals_points = goals * goal_points_per
+            assists_points = assists * assists_points_per
+            cs_points = clean_sheets * cs_points_per
+
+            if position == "GK":
+                saves_points = (saves // 3) * 1
+            else:
+                saves_points = 0
+
+            yc_points = -1 * yellow_cards
+            rc_points = -3 * red_cards
+            og_points = -2 * own_goals
+            ps_points = 5 * pens_saved
+            pm_points = -2 * pens_missed
+            bonus_points = bonus
+
+            # Build breakdown table
+            rows = []
+
+            rows.append({
+                "Category": "Goals",
+                "Count": int(goals),
+                "Points per Event": goal_points_per,
+                "Total Points": int(goals_points),
+            })
+            rows.append({
+                "Category": "Assists",
+                "Count": int(assists),
+                "Points per Event": assists_points_per,
+                "Total Points": int(assists_points),
+            })
+            rows.append({
+                "Category": "Clean Sheets",
+                "Count": int(clean_sheets),
+                "Points per Event": cs_points_per,
+                "Total Points": int(cs_points),
+            })
+            rows.append({
+                "Category": "Minutes (60+)",
+                "Count": int(apps_60),
+                "Points per Event": 2,
+                "Total Points": int(apps_60 * 2),
+            })
+            rows.append({
+                "Category": "Minutes (<60)",
+                "Count": int(apps_sub),
+                "Points per Event": 1,
+                "Total Points": int(apps_sub * 1),
+            })
+            if position == "GK":
+                rows.append({
+                    "Category": "Saves",
+                    "Count": int(saves),
+                    "Points per Event": "1 per 3",
+                    "Total Points": int(saves_points),
+                })
+            if position in ["GK", "DEF"]:
+                rows.append({
+                    "Category": "Goals Conceded",
+                    "Count": int(goals_conceded),
+                    "Points per Event": "-1 per 2",
+                    "Total Points": int(gc_points),
+                })
+            rows.append({
+                "Category": "Bonus",
+                "Count": int(bonus),
+                "Points per Event": 1,
+                "Total Points": int(bonus_points),
+            })
+            rows.append({
+                "Category": "Yellow Cards",
+                "Count": int(yellow_cards),
+                "Points per Event": -1,
+                "Total Points": int(yc_points),
+            })
+            rows.append({
+                "Category": "Red Cards",
+                "Count": int(red_cards),
+                "Points per Event": -3,
+                "Total Points": int(rc_points),
+            })
+            rows.append({
+                "Category": "Own Goals",
+                "Count": int(own_goals),
+                "Points per Event": -2,
+                "Total Points": int(og_points),
+            })
+            rows.append({
+                "Category": "Penalties Saved",
+                "Count": int(pens_saved),
+                "Points per Event": 5,
+                "Total Points": int(ps_points),
+            })
+            rows.append({
+                "Category": "Penalties Missed",
+                "Count": int(pens_missed),
+                "Points per Event": -2,
+                "Total Points": int(pm_points),
+            })
+
+            breakdown_df = pd.DataFrame(rows)
+
+            # Only keep rows that actually contributed something
+            breakdown_df = breakdown_df[breakdown_df["Count"] != 0].reset_index(drop=True)
+
+            calc_total = breakdown_df["Total Points"].sum()
+
+            st.markdown(f"### 🧮 FPL Points Contribution (GW {gw_start}–{gw_end})")
+            st.write(f"**Total from breakdown:** {int(calc_total)} points")
+            st.write(f"**Total from API (sum of total_points):** {int(total_points_range)} points")
+
+            st.dataframe(
+                breakdown_df,
+                use_container_width=True,
+            )
+
+            # ---- Bar Chart: Points by Category ----
+            st.markdown("### 📈 Points Contribution by Category")
+            if not breakdown_df.empty:
+                fig_bar = px.bar(
+                    breakdown_df,
+                    x="Category",
+                    y="Total Points",
+                    title=f"Points Contribution (GW {gw_start}–{gw_end}) — {player_name}",
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+            # ---- Line Chart: Points per GW (range only) ----
+            st.markdown("### 📉 Points per Gameweek (GW Range)")
+            fig_line = px.line(
+                df_range.sort_values("round"),
+                x="round",
+                y="total_points",
+                markers=True,
+                title=f"Points per GW — {player_name} (GW {gw_start}–{gw_end})",
+            )
+            st.plotly_chart(fig_line, use_container_width=True)
 
     else:
         st.info("No weekly data available for this player.")
@@ -327,8 +517,3 @@ st.dataframe(
 )
 
 st.markdown("</div>", unsafe_allow_html=True)
-
-
-
-
-
