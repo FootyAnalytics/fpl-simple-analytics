@@ -326,7 +326,7 @@ if selected_player != "None":
             # Defensive contributions
             def calculate_def_contribution_points(df, position):
             # """Calculate defensive contribution points match-by-match (capped at 2 per match)."""
-            def_points = 0
+            
 
             for _, row in df.iterrows():
                 dc = row.get("defensive_contribution", 0)
@@ -338,7 +338,7 @@ if selected_player != "None":
                     if dc >= 12:
                         def_points += 2
                 # GK gets no defensive contribution bonus
-
+            def_points = calculate_def_contribution_points(df_range, position)
             return def_points
 
 
@@ -615,5 +615,6 @@ st.dataframe(
 )
 
 st.markdown("</div>", unsafe_allow_html=True)
+
 
 
