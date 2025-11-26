@@ -18,8 +18,10 @@ if "selected_player2" not in st.session_state:
 # Background Image
 # =====================================
 def set_background(image_file: str):
+    # On Streamlit Cloud, this may not exist – just skip silently
     if not os.path.exists(image_file):
-        return  # skip on cloud if missing
+        return
+
     with open(image_file, "rb") as f:
         data = f.read()
 
@@ -48,15 +50,16 @@ def set_background(image_file: str):
             max-width: 2000px !important;
         }}
 
-        .row_heading.level0 {display:none}
-        .blank {display:none}
+        /* Hide table index */
+        .row_heading.level0 {{display:none}}
+        .blank {{display:none}}
         </style>
         """,
         unsafe_allow_html=True
     )
 
 
-IMAGE_PATH = "bg1.png"
+IMAGE_PATH = "bg1.png"  # must exist in repo root
 set_background(IMAGE_PATH)
 
 
@@ -75,21 +78,23 @@ def load_players():
 
     df = pd.DataFrame(data["elements"])
 
-    # merge teams
+    # Merge team names
     teams = pd.DataFrame(data["teams"])[["id", "name"]].rename(
         columns={"id": "team", "name": "Team"}
     )
     df = df.merge(teams, on="team", how="left")
 
-    # positions
+    # Position map
     pos_map = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
     df["Position"] = df["element_type"].map(pos_map)
 
-    # pricing
+    # Pricing
     df["Current Price"] = df["now_cost"] / 10
 
-    # ownership
-    df["Selected By (Decimal)"] = pd.to_numeric(df["selected_by_percent"], errors="coerce") / 100
+    # Ownership
+    df["Selected By (Decimal)"] = pd.to_numeric(
+        df["selected_by_percent"], errors="coerce"
+    ) / 100
     df["Selected By %"] = df["Selected By (Decimal)"] * 100
 
     return df
@@ -108,7 +113,11 @@ weekly = load_weekly()
 # =====================================
 # Build Weekly DF for GW Slider
 # =====================================
-weekly_df = pd.concat([pd.DataFrame(v) for v in weekly.values()], ignore_index=True)
+weekly_df = pd.concat(
+    [pd.DataFrame(v) for v in weekly.values()],
+    ignore_index=True
+)
+
 min_gw = int(weekly_df["round"].min())
 max_gw = int(weekly_df["round"].max())
 
@@ -116,7 +125,7 @@ max_gw = int(weekly_df["round"].max())
 # =====================================
 # Helper: Get GW-range Points
 # =====================================
-def get_points_for_range(player_id: int, gw1: int, gw2: int):
+def get_points_for_range(player_id: int, gw1: int, gw2: int) -> int:
     history = weekly.get(str(player_id), [])
     if not history:
         return 0
@@ -173,7 +182,7 @@ with st.sidebar.form("filters_form", clear_on_submit=False):
 
     reset_clicked = st.form_submit_button("🔄 Reset All Filters")
 
-# reset
+# Reset all filters & state
 if reset_clicked:
     st.session_state.clear()
     st.rerun()
@@ -188,18 +197,18 @@ st.sidebar.header("👤 Player Analysis")
 st.session_state.selected_player = st.sidebar.selectbox(
     "Player A — View / Compare",
     ["None"] + sorted(players["web_name"].unique()),
-    key="playerA"
+    key="playerA",
 )
 
 st.session_state.selected_player2 = st.sidebar.selectbox(
     "Player B — Compare (optional)",
     ["None"] + sorted(players["web_name"].unique()),
-    key="playerB"
+    key="playerB",
 )
 
 
 # =====================================
-# Filter Player Table
+# Filter Base Player Table
 # =====================================
 filtered = players.copy()
 
@@ -209,7 +218,7 @@ if st.session_state.team_filter != "All Teams":
 if st.session_state.position_filter != "All":
     filtered = filtered[filtered["Position"] == st.session_state.position_filter]
 
-# GW Points
+# GW-range points
 filtered["Points (GW Range)"] = filtered.apply(
     lambda r: get_points_for_range(
         r["id"],
@@ -219,7 +228,7 @@ filtered["Points (GW Range)"] = filtered.apply(
     axis=1,
 )
 
-# Build display table
+# Build main table
 table = filtered[
     [
         "web_name",
@@ -252,7 +261,7 @@ table = table.sort_values(by=st.session_state.sort_column, ascending=ascending)
 
 
 # =====================================
-# PLAYER BREAKDOWN (HELPER)
+# Player Breakdown Helper
 # =====================================
 def build_player_breakdown(web_name: str):
     row = players[players["web_name"] == web_name]
@@ -271,11 +280,10 @@ def build_player_breakdown(web_name: str):
         (df["round"] >= st.session_state.gw_slider[0]) &
         (df["round"] <= st.session_state.gw_slider[1])
     ]
-
     if df.empty:
         return {"has_data": False}
 
-    # Stats
+    # Raw stats
     mins = df["minutes"].sum()
     goals = df["goals_scored"].sum()
     assists = df["assists"].sum()
@@ -288,26 +296,28 @@ def build_player_breakdown(web_name: str):
     og = df["own_goals"].sum()
     pm_miss = df["penalties_missed"].sum()
     ps = df["penalties_saved"].sum()
-    dc_raw = df.get("defensive_contribution", pd.Series([0]*len(df))).sum()
+    dc_raw = df.get("defensive_contribution", pd.Series([0] * len(df))).sum()
 
     total_pts = df["total_points"].sum()
 
-    # FPL rules
-    minutes_points = sum([2 if m >= 60 else 1 if m > 0 else 0 for m in df["minutes"]])
+    # FPL minutes points
+    minutes_points = sum(
+        2 if m >= 60 else 1 if m > 0 else 0 for m in df["minutes"]
+    )
 
-    # goal points by position
+    # Goals by position
     if pos == "GK":
         goal_pts = goals * 10
     elif pos == "DEF":
         goal_pts = goals * 6
     elif pos == "MID":
         goal_pts = goals * 5
-    else:
+    else:  # FWD
         goal_pts = goals * 4
 
     assist_pts = assists * 3
 
-    # clean sheets
+    # Clean sheets
     if pos in ["GK", "DEF"]:
         cs_pts = cs * 4
     elif pos == "MID":
@@ -315,19 +325,20 @@ def build_player_breakdown(web_name: str):
     else:
         cs_pts = 0
 
+    # Saves (GK only)
     save_pts = (saves // 3) * 1 if pos == "GK" else 0
 
-    # goals conceded
+    # Goals conceded (GK/DEF only)
     gc_pts = (-1 * (gc // 2)) if pos in ["GK", "DEF"] else 0
 
-    # discipline
+    # Discipline
     yc_pts = -1 * yc
     rc_pts = -3 * rc
     og_pts = -2 * og
     pm_pts = -2 * pm_miss
     ps_pts = 5 * ps
 
-    # DC capped
+    # Defensive contribution (capped)
     if pos == "DEF":
         dc_pts = 2 if dc_raw >= 10 else 0
     elif pos in ["MID", "FWD"]:
@@ -361,7 +372,10 @@ def build_player_breakdown(web_name: str):
     if other_pts != 0:
         breakdown_rows.append(("Other / Unaccounted", other_pts))
 
-    breakdown_df = pd.DataFrame(breakdown_rows, columns=["Category", "Total Points"])
+    breakdown_df = pd.DataFrame(
+        breakdown_rows,
+        columns=["Category", "Total Points"]
+    )
 
     return {
         "has_data": True,
@@ -374,7 +388,7 @@ def build_player_breakdown(web_name: str):
 
 
 # =====================================
-# PLAYER DETAIL / COMPARISON POPUP
+# Player Detail / Comparison "Popup"
 # =====================================
 playerA = st.session_state.selected_player
 playerB = st.session_state.selected_player2
@@ -382,7 +396,9 @@ playerB = st.session_state.selected_player2
 if playerA != "None":
 
     A = build_player_breakdown(playerA)
-    B = build_player_breakdown(playerB) if playerB != "None" and playerB != playerA else None
+    B = build_player_breakdown(playerB) if (
+        playerB != "None" and playerB != playerA
+    ) else None
 
     title = f"📌 Player Analysis — {playerA}"
     if B and B.get("has_data", False):
@@ -390,41 +406,59 @@ if playerA != "None":
 
     st.title(title)
 
-    # =========================
-    # RADAR CHART
-    # =========================
+    # ------------------------------
+    # Radar Chart for Comparison
+    # ------------------------------
     if B and A.get("has_data", False) and B.get("has_data", False):
 
-        cats = [
-            "Goals", "Assists", "Clean Sheets", "Bonus",
-            "Saves", "Defensive Contributions",
-            "Minutes", "Total Points"
+        categories = [
+            "Goals",
+            "Assists",
+            "Clean Sheets",
+            "Bonus",
+            "Saves",
+            "Defensive Contributions",
+            "Minutes",
+            "Total Points",
         ]
 
-        def extract_vals(data):
-            bd = data["breakdown_df"].set_index("Category")["Total Points"]
-            return [
-                float(bd.get(c, 0)) if c != "Total Points" else float(data["total_points"])
-                for c in cats
-            ]
+        def radar_values(data_dict):
+            bd = data_dict["breakdown_df"].set_index("Category")["Total Points"]
+            vals = []
+            for c in categories:
+                if c == "Minutes":
+                    # reconstruct from Category table if present; if not, 0
+                    vals.append(float(bd.get("Minutes", 0)))
+                elif c == "Total Points":
+                    vals.append(float(data_dict["total_points"]))
+                else:
+                    vals.append(float(bd.get(c, 0)))
+            return vals
 
-        rA = extract_vals(A)
-        rB = extract_vals(B)
+        rA = radar_values(A)
+        rB = radar_values(B)
 
         fig = go.Figure()
-        fig.add_trace(go.Scatterpolar(r=rA, theta=cats, fill="toself", name=playerA))
-        fig.add_trace(go.Scatterpolar(r=rB, theta=cats, fill="toself", name=playerB))
-        fig.update_layout(title="FPL Points Comparison Radar", showlegend=True)
+        fig.add_trace(go.Scatterpolar(
+            r=rA, theta=categories, fill="toself", name=playerA
+        ))
+        fig.add_trace(go.Scatterpolar(
+            r=rB, theta=categories, fill="toself", name=playerB
+        ))
+        fig.update_layout(
+            title="FPL Points Comparison Radar",
+            showlegend=True,
+            polar=dict(radialaxis=dict(visible=True)),
+        )
 
         st.plotly_chart(fig, use_container_width=True)
 
-    # =========================
-    # FPL POINTS CONTRIBUTION
-    # =========================
+    # ------------------------------
+    # FPL Points Contribution Table
+    # ------------------------------
     st.markdown("### 🧮 FPL Points Contribution")
 
     if B and A.get("has_data", False) and B.get("has_data", False):
-
         dfA = A["breakdown_df"].copy()
         dfB = B["breakdown_df"].copy()
 
@@ -441,13 +475,13 @@ if playerA != "None":
         styled = comp.style.apply(
             lambda r: winner(r),
             subset=["Total Points A", "Total Points B"],
-            axis=1
+            axis=1,
         )
 
         st.dataframe(
             styled,
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
             height=min(50 * len(comp), 700),
         )
 
@@ -455,14 +489,13 @@ if playerA != "None":
         st.dataframe(
             A["breakdown_df"],
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
-    # =========================
-    # GAMEWEEK BREAKDOWN TABLE
-    # =========================
+    # ------------------------------
+    # GW Breakdown Table
+    # ------------------------------
     if A.get("has_data", False):
-
         st.markdown(
             f"### 📊 Points Breakdown by Gameweek (GW {st.session_state.gw_slider[0]}–{st.session_state.gw_slider[1]})"
         )
@@ -484,9 +517,15 @@ if playerA != "None":
         if A["position"] == "GK":
             cols.append(("saves", "Saves"))
 
-        df_show = dfh[[c[0] for c in cols]].rename(columns={a: b for a, b in cols})
+        df_show = dfh[[c[0] for c in cols]].rename(
+            columns={a: b for a, b in cols}
+        )
 
-        st.dataframe(df_show, hide_index=True, use_container_width=True)
+        st.dataframe(
+            df_show,
+            hide_index=True,
+            width="stretch",
+        )
 
 
 # =====================================
@@ -498,11 +537,10 @@ st.title("🔥 FPL Analytics Dashboard")
 st.write("Using cached local data for instant loading.")
 
 st.subheader("📊 Player Value Table")
-
 st.dataframe(
     table,
     hide_index=True,
-    use_container_width=True,
+    width="stretch",
     column_config={
         "Player": st.column_config.TextColumn("Player"),
         "Team": st.column_config.TextColumn("Team"),
