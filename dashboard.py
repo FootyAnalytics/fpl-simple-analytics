@@ -79,6 +79,7 @@ def load_players():
     df["Position"] = df["element_type"].map(pos_map)
 
     df["Current Price"] = df["now_cost"] / 10
+
     df["Points Per Million"] = df["total_points"] / df["Current Price"]
 
     df["Selected By (Decimal)"] = pd.to_numeric(df["selected_by_percent"], errors="coerce") / 100
@@ -99,6 +100,7 @@ def load_weekly():
 players = load_players()
 weekly = load_weekly()
 
+
 # -----------------------------------------
 # WEEKLY RANGE LIMIT BUILD
 # -----------------------------------------
@@ -116,7 +118,7 @@ max_gw = int(weekly_df["round"].max())
 # -----------------------------------------
 st.sidebar.title("🔍 Filters")
 
-# Reset-all button BEFORE widgets so rerun doesn't break keys
+# Reset-all button BEFORE widgets (required)
 if st.sidebar.button("🔄 Reset All Filters"):
     st.session_state.clear()
     st.session_state.selected_player = "None"
@@ -181,7 +183,7 @@ if position_filter != "All":
 
 
 # -----------------------------------------
-# GW RANGE POINT CALCULATION
+# GAMEWEEK-RANGE POINT CALCULATION
 # -----------------------------------------
 def get_points_for_range(player_id, gw1, gw2):
     history = weekly.get(str(player_id), [])
@@ -232,10 +234,10 @@ table = table.sort_values(by=sort_column, ascending=ascending)
 
 
 # -----------------------------------------
-# DEFENSIVE CONTRIBUTION LOGIC (FPL ACCURATE)
+# DEFENSIVE CONTRIBUTION LOGIC (FPL Accurate)
 # -----------------------------------------
 def calculate_def_contribution_points(df, position):
-    """Apply official FPL defensive contribution rules."""
+    """Correct FPL rule: max 2 pts per match, threshold-based."""
     total = 0
 
     for _, row in df.iterrows():
@@ -245,7 +247,7 @@ def calculate_def_contribution_points(df, position):
             total += 2
         elif position in ["MID", "FWD"] and dc >= 12:
             total += 2
-        # GK always 0
+        # GK always gets 0
 
     return total
 
@@ -261,6 +263,8 @@ if selected_player != "None":
 
     history = weekly.get(str(pid), [])
     df_hist = pd.DataFrame(history)
+
+    # Filter only selected GW range
     df_range = df_hist[(df_hist["round"] >= gw_start) & (df_hist["round"] <= gw_end)]
 
     # Drop expected stats
@@ -296,17 +300,14 @@ if selected_player != "None":
         df_range = df_range.drop(columns=["Clean Sheets"], errors="ignore")
 
     # -----------------------------------------
-    # FPL POINTS BREAKDOWN
+    # FPL POINTS BREAKDOWN (GW-Range Correct)
     # -----------------------------------------
-    # Minutes logic
     mins = df_range["Minutes"]
     mins_60 = (mins >= 60).sum()
     mins_sub = ((mins > 0) & (mins < 60)).sum()
 
-    # Goal values by position
     goal_values = {"GK": 10, "DEF": 6, "MID": 5, "FWD": 4}
 
-    # Goals/Assists
     goals = df_range["Goals"].sum() if "Goals" in df_range else 0
     assists = df_range["Assists"].sum() if "Assists" in df_range else 0
 
@@ -320,27 +321,22 @@ if selected_player != "None":
     else:
         clean_sheet_points = 0
 
-    # Saves
     saves_points = 0
     if position == "GK" and "Saves" in df_range:
         saves_points = (df_range["Saves"].sum() // 3) * 1
 
-    # Goals conceded (GK/DEF)
     conceded_points = 0
     if position in ["GK", "DEF"] and "Goals Conceded" in df_range:
         conceded_points = -1 * (df_range["Goals Conceded"].sum() // 2)
 
-    # Cards
     yc_points = -1 * df_range["Yellow Cards"].sum() if "Yellow Cards" in df_range else 0
     rc_points = -3 * df_range["Red Cards"].sum() if "Red Cards" in df_range else 0
 
-    # Bonus
     bonus_points = df_range["Bonus"].sum() if "Bonus" in df_range else 0
 
-    # Defensive contributions
-    def_points = calculate_def_contribution_points(df_hist, position)
+    # FIX APPLIED HERE — use df_range, not df_hist
+    def_points = calculate_def_contribution_points(df_range, position)
 
-    # Total points per category
     breakdown_points = {
         "Goals": goals * goal_values[position],
         "Assists": assists * 3,
@@ -357,19 +353,23 @@ if selected_player != "None":
 
     total_points = sum(breakdown_points.values())
 
-    # Convert to DataFrame
     breakdown_df = pd.DataFrame({
         "Category": breakdown_points.keys(),
         "Total Points": breakdown_points.values(),
-        "Percent %": [round((v / total_points) * 100, 1) if total_points != 0 else 0
-                      for v in breakdown_points.values()]
+        "Percent %": [
+            round((v / total_points) * 100, 1) if total_points != 0 else 0
+            for v in breakdown_points.values()
+        ]
     })
 
+    # -----------------------------------------
+    # DISPLAY BREAKDOWN TABLE
+    # -----------------------------------------
     st.subheader(f"📌 FPL Points Contribution (GW {gw_start}-{gw_end}) — {player_name}")
     st.dataframe(breakdown_df, hide_index=True, use_container_width=True)
 
     # -----------------------------------------
-    # GAMEWEEK BREAKDOWN TABLE
+    # GAMEWEEK-BY-GAMEWEEK BREAKDOWN
     # -----------------------------------------
     st.subheader(f"📊 Points Breakdown by Gameweek (GW {gw_start}-{gw_end})")
     st.dataframe(df_range, hide_index=True, use_container_width=True)
