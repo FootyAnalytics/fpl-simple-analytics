@@ -131,21 +131,22 @@ def get_points_for_range(player_id: int, gw1: int, gw2: int) -> int:
 
 
 # =====================================
-# Sidebar Filters (Form)
+# SIDEBAR FILTERS (Form only for filters)
 # =====================================
 with st.sidebar.form("filters_form", clear_on_submit=False):
+
     st.header("🔍 Filters")
 
     team_filter = st.selectbox(
         "Team",
         ["All Teams"] + sorted(players["Team"].unique()),
-        key="team_filter",
+        key="team_filter"
     )
 
     position_filter = st.selectbox(
         "Position",
         ["All", "GK", "DEF", "MID", "FWD"],
-        key="position_filter",
+        key="position_filter"
     )
 
     gw_start, gw_end = st.slider(
@@ -153,7 +154,7 @@ with st.sidebar.form("filters_form", clear_on_submit=False):
         min_value=min_gw,
         max_value=max_gw,
         value=(min_gw, max_gw),
-        key="gw_slider",
+        key="gw_slider"
     )
 
     sort_column = st.selectbox(
@@ -164,37 +165,43 @@ with st.sidebar.form("filters_form", clear_on_submit=False):
             "Points Per Million",
             "Selected By %",
             "Template Value",
-            "Differential Value",
+            "Differential Value"
         ],
-        key="sort_column",
+        key="sort_column"
     )
 
     sort_order = st.radio(
         "Sort Order",
         ["Descending", "Ascending"],
-        key="sort_order",
-    )
-
-    selected_player = st.selectbox(
-        "Player A — View / Compare",
-        ["None"] + sorted(players["web_name"].unique()),
-        key="selected_player",
-    )
-
-    selected_player2 = st.selectbox(
-        "Player B — Comparison (optional)",
-        ["None"] + sorted(players["web_name"].unique()),
-        key="selected_player2",
+        key="sort_order"
     )
 
     reset_clicked = st.form_submit_button("🔄 Reset All Filters")
 
-# Handle reset
+# Handle reset safely
 if reset_clicked:
-    st.session_state.clear()
-    st.session_state.selected_player = "None"
-    st.session_state.selected_player2 = "None"
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
     st.rerun()
+
+
+# =====================================
+# PLAYER SELECTION (outside form)
+# =====================================
+st.sidebar.markdown("---")  # visual divider
+st.sidebar.header("👤 Player Analysis")
+
+st.session_state.selected_player = st.sidebar.selectbox(
+    "Player A — View / Compare",
+    ["None"] + sorted(players["web_name"].unique()),
+    key="player_a_select"
+)
+
+st.session_state.selected_player2 = st.sidebar.selectbox(
+    "Player B — Comparison",
+    ["None"] + sorted(players["web_name"].unique()),
+    key="player_b_select"
+)
 
 
 # =====================================
@@ -586,3 +593,4 @@ st.dataframe(
 )
 
 st.markdown("</div>", unsafe_allow_html=True)
+
