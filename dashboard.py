@@ -5,26 +5,24 @@ import base64
 import os
 import plotly.graph_objects as go
 
-# =====================================
+# -----------------------------------------
 # Session State Defaults
-# =====================================
+# -----------------------------------------
 if "selected_player" not in st.session_state:
     st.session_state.selected_player = "None"
 if "selected_player2" not in st.session_state:
     st.session_state.selected_player2 = "None"
 
 
-# =====================================
-# Background Image
-# =====================================
-def set_background(image_file: str):
-    # On Streamlit Cloud, this may not exist – just skip silently
+# -----------------------------------------
+# BACKGROUND IMAGE
+# -----------------------------------------
+def set_background(image_file):
     if not os.path.exists(image_file):
-        return
+        return  # skip on streamlit cloud
 
     with open(image_file, "rb") as f:
         data = f.read()
-
     base64_image = base64.b64encode(data).decode()
 
     st.markdown(
@@ -35,7 +33,6 @@ def set_background(image_file: str):
             background-size: cover;
             background-position: center;
             background-attachment: fixed;
-            background-repeat: no-repeat;
         }}
 
         .main-container {{
@@ -50,7 +47,6 @@ def set_background(image_file: str):
             max-width: 2000px !important;
         }}
 
-        /* Hide table index */
         .row_heading.level0 {{display:none}}
         .blank {{display:none}}
         </style>
@@ -59,42 +55,34 @@ def set_background(image_file: str):
     )
 
 
-IMAGE_PATH = "bg1.png"  # must exist in repo root
+IMAGE_PATH = "bg1.png"
 set_background(IMAGE_PATH)
 
 
-# =====================================
-# Load Local Cache Files
-# =====================================
+# -----------------------------------------
+# LOAD CACHE FILES
+# -----------------------------------------
 CACHE_DIR = "cache"
 PLAYERS_FILE = os.path.join(CACHE_DIR, "players.json")
 WEEKLY_FILE = os.path.join(CACHE_DIR, "weekly.json")
-
 
 @st.cache_data
 def load_players():
     with open(PLAYERS_FILE, "r") as f:
         data = json.load(f)
-
     df = pd.DataFrame(data["elements"])
 
-    # Merge team names
     teams = pd.DataFrame(data["teams"])[["id", "name"]].rename(
         columns={"id": "team", "name": "Team"}
     )
-    df = df.merge(teams, on="team", how="left")
 
-    # Position map
+    df = df.merge(teams, on="team")
+
     pos_map = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
     df["Position"] = df["element_type"].map(pos_map)
 
-    # Pricing
     df["Current Price"] = df["now_cost"] / 10
-
-    # Ownership
-    df["Selected By (Decimal)"] = pd.to_numeric(
-        df["selected_by_percent"], errors="coerce"
-    ) / 100
+    df["Selected By (Decimal)"] = pd.to_numeric(df["selected_by_percent"], errors="coerce") / 100
     df["Selected By %"] = df["Selected By (Decimal)"] * 100
 
     return df
@@ -109,56 +97,48 @@ def load_weekly():
 players = load_players()
 weekly = load_weekly()
 
-
-# =====================================
-# Build Weekly DF for GW Slider
-# =====================================
-weekly_df = pd.concat(
-    [pd.DataFrame(v) for v in weekly.values()],
-    ignore_index=True
-)
-
+# Weekly DF to find GW limits
+weekly_df = pd.concat([pd.DataFrame(v) for v in weekly.values()], ignore_index=True)
 min_gw = int(weekly_df["round"].min())
 max_gw = int(weekly_df["round"].max())
 
 
-# =====================================
-# Helper: Get GW-range Points
-# =====================================
-def get_points_for_range(player_id: int, gw1: int, gw2: int) -> int:
+# -----------------------------------------
+# HELPER — Points in GW Range
+# -----------------------------------------
+def get_points_for_range(player_id, gw1, gw2):
     history = weekly.get(str(player_id), [])
     if not history:
         return 0
-
     df = pd.DataFrame(history)
     df = df[(df["round"] >= gw1) & (df["round"] <= gw2)]
-    return int(df["total_points"].sum())
+    return df["total_points"].sum()
 
 
-# =====================================
+# -----------------------------------------
 # SIDEBAR FILTERS (FORM)
-# =====================================
-with st.sidebar.form("filters_form", clear_on_submit=False):
+# -----------------------------------------
+with st.sidebar.form("filters_form"):
     st.header("🔍 Filters")
 
     team_filter = st.selectbox(
         "Team",
         ["All Teams"] + sorted(players["Team"].unique()),
-        key="team_filter",
+        key="team_filter"
     )
 
     position_filter = st.selectbox(
         "Position",
         ["All", "GK", "DEF", "MID", "FWD"],
-        key="position_filter",
+        key="position_filter"
     )
 
     gw_start, gw_end = st.slider(
         "Gameweek Range",
-        min_value=min_gw,
-        max_value=max_gw,
-        value=(min_gw, max_gw),
-        key="gw_slider",
+        min_gw,
+        max_gw,
+        (min_gw, max_gw),
+        key="gw_slider"
     )
 
     sort_column = st.selectbox(
@@ -171,45 +151,39 @@ with st.sidebar.form("filters_form", clear_on_submit=False):
             "Template Value",
             "Differential Value",
         ],
-        key="sort_column",
+        key="sort_column"
     )
 
     sort_order = st.radio(
         "Sort Order",
         ["Descending", "Ascending"],
-        key="sort_order",
+        key="sort_order"
     )
 
     reset_clicked = st.form_submit_button("🔄 Reset All Filters")
 
-# Reset all filters & state
 if reset_clicked:
     st.session_state.clear()
     st.rerun()
 
-
-# =====================================
-# PLAYER SELECTION (OUTSIDE FORM)
-# =====================================
-st.sidebar.markdown("---")
+# Player selection (outside form)
 st.sidebar.header("👤 Player Analysis")
-
 st.session_state.selected_player = st.sidebar.selectbox(
-    "Player A — View / Compare",
+    "Player A",
     ["None"] + sorted(players["web_name"].unique()),
-    key="playerA",
+    key="playerA"
 )
 
 st.session_state.selected_player2 = st.sidebar.selectbox(
-    "Player B — Compare (optional)",
+    "Player B (Compare)",
     ["None"] + sorted(players["web_name"].unique()),
-    key="playerB",
+    key="playerB"
 )
 
 
-# =====================================
-# Filter Base Player Table
-# =====================================
+# -----------------------------------------
+# FILTER MAIN TABLE
+# -----------------------------------------
 filtered = players.copy()
 
 if st.session_state.team_filter != "All Teams":
@@ -218,30 +192,26 @@ if st.session_state.team_filter != "All Teams":
 if st.session_state.position_filter != "All":
     filtered = filtered[filtered["Position"] == st.session_state.position_filter]
 
-# GW-range points
 filtered["Points (GW Range)"] = filtered.apply(
     lambda r: get_points_for_range(
         r["id"],
         st.session_state.gw_slider[0],
-        st.session_state.gw_slider[1],
+        st.session_state.gw_slider[1]
     ),
-    axis=1,
+    axis=1
 )
 
-# Build main table
-table = filtered[
-    [
-        "web_name",
-        "Team",
-        "Position",
-        "Points (GW Range)",
-        "Current Price",
-        "Selected By %",
-    ]
-].rename(columns={"web_name": "Player"})
+# Build full table
+table = filtered[[
+    "web_name",
+    "Team",
+    "Position",
+    "Points (GW Range)",
+    "Current Price",
+    "Selected By %",
+]].rename(columns={"web_name": "Player"})
 
 table["Points Per Million"] = table["Points (GW Range)"] / table["Current Price"]
-
 sel_dec = table["Selected By %"] / 100
 table["Template Value"] = table["Points Per Million"] * sel_dec
 table["Differential Value"] = table["Points Per Million"] * (1 - sel_dec)
@@ -252,7 +222,7 @@ round_cols = [
     "Points Per Million",
     "Selected By %",
     "Template Value",
-    "Differential Value",
+    "Differential Value"
 ]
 table[round_cols] = table[round_cols].round(2)
 
@@ -260,10 +230,10 @@ ascending = st.session_state.sort_order == "Ascending"
 table = table.sort_values(by=st.session_state.sort_column, ascending=ascending)
 
 
-# =====================================
-# Player Breakdown Helper
-# =====================================
-def build_player_breakdown(web_name: str):
+# -----------------------------------------
+# PLAYER BREAKDOWN FUNCTION
+# -----------------------------------------
+def build_player_breakdown(web_name):
     row = players[players["web_name"] == web_name]
     if row.empty:
         return {"has_data": False}
@@ -280,6 +250,7 @@ def build_player_breakdown(web_name: str):
         (df["round"] >= st.session_state.gw_slider[0]) &
         (df["round"] <= st.session_state.gw_slider[1])
     ]
+
     if df.empty:
         return {"has_data": False}
 
@@ -294,30 +265,21 @@ def build_player_breakdown(web_name: str):
     yc = df["yellow_cards"].sum()
     rc = df["red_cards"].sum()
     og = df["own_goals"].sum()
-    pm_miss = df["penalties_missed"].sum()
+    pm = df["penalties_missed"].sum()
     ps = df["penalties_saved"].sum()
-    dc_raw = df.get("defensive_contribution", pd.Series([0] * len(df))).sum()
-
+    dc_raw = df.get("defensive_contribution", pd.Series([0]*len(df))).sum()
     total_pts = df["total_points"].sum()
 
-    # FPL minutes points
-    minutes_points = sum(
-        2 if m >= 60 else 1 if m > 0 else 0 for m in df["minutes"]
-    )
+    # Minutes points
+    minutes_pts = sum(2 if m >= 60 else 1 if m > 0 else 0 for m in df["minutes"])
 
-    # Goals by position
-    if pos == "GK":
-        goal_pts = goals * 10
-    elif pos == "DEF":
-        goal_pts = goals * 6
-    elif pos == "MID":
-        goal_pts = goals * 5
-    else:  # FWD
-        goal_pts = goals * 4
+    # Goal points
+    goal_pts_map = {"GK": 10, "DEF": 6, "MID": 5, "FWD": 4}
+    goal_pts = goals * goal_pts_map[pos]
 
     assist_pts = assists * 3
 
-    # Clean sheets
+    # Clean sheet
     if pos in ["GK", "DEF"]:
         cs_pts = cs * 4
     elif pos == "MID":
@@ -325,17 +287,21 @@ def build_player_breakdown(web_name: str):
     else:
         cs_pts = 0
 
-    # Saves (GK only)
+    # Saves
     save_pts = (saves // 3) * 1 if pos == "GK" else 0
 
-    # Goals conceded (GK/DEF only)
-    gc_pts = (-1 * (gc // 2)) if pos in ["GK", "DEF"] else 0
+    # Goals conceded
+    gc_pts = -(gc // 2) if pos in ["GK", "DEF"] else 0
 
-    # Discipline
-    yc_pts = -1 * yc
+    # Cards
+    yc_pts = -yc
     rc_pts = -3 * rc
+
+    # Own goals
     og_pts = -2 * og
-    pm_pts = -2 * pm_miss
+
+    # Penalties
+    pm_pts = -2 * pm
     ps_pts = 5 * ps
 
     # Defensive contribution (capped)
@@ -347,14 +313,14 @@ def build_player_breakdown(web_name: str):
         dc_pts = 0
 
     accounted = (
-        minutes_points + goal_pts + assist_pts + cs_pts +
-        save_pts + gc_pts + yc_pts + rc_pts + og_pts +
-        pm_pts + ps_pts + dc_pts + bonus
+        minutes_pts + goal_pts + assist_pts + cs_pts + save_pts +
+        gc_pts + yc_pts + rc_pts + og_pts + pm_pts + ps_pts +
+        dc_pts + bonus
     )
-    other_pts = total_pts - accounted
+    other = total_pts - accounted
 
-    breakdown_rows = [
-        ("Minutes", minutes_points),
+    rows = [
+        ("Minutes", minutes_pts),
         ("Goals", goal_pts),
         ("Assists", assist_pts),
         ("Clean Sheets", cs_pts),
@@ -369,13 +335,10 @@ def build_player_breakdown(web_name: str):
         ("Penalties Saved", ps_pts),
     ]
 
-    if other_pts != 0:
-        breakdown_rows.append(("Other / Unaccounted", other_pts))
+    if other != 0:
+        rows.append(("Other / Unaccounted", other))
 
-    breakdown_df = pd.DataFrame(
-        breakdown_rows,
-        columns=["Category", "Total Points"]
-    )
+    breakdown_df = pd.DataFrame(rows, columns=["Category", "Total Points"])
 
     return {
         "has_data": True,
@@ -387,118 +350,91 @@ def build_player_breakdown(web_name: str):
     }
 
 
-# =====================================
-# Player Detail / Comparison "Popup"
-# =====================================
+# -----------------------------------------
+# PREMIUM MODAL POPUP RESTORED HERE
+# -----------------------------------------
+
 playerA = st.session_state.selected_player
 playerB = st.session_state.selected_player2
 
 if playerA != "None":
+    with st.modal(f"📌 Player Analysis — {playerA}"):
+        A = build_player_breakdown(playerA)
+        B = None
+        if playerB != "None" and playerB != playerA:
+            B = build_player_breakdown(playerB)
 
-    A = build_player_breakdown(playerA)
-    B = build_player_breakdown(playerB) if (
-        playerB != "None" and playerB != playerA
-    ) else None
+        # -------------------------------------
+        # Radar Chart
+        # -------------------------------------
+        if B and A["has_data"] and B["has_data"]:
+            categories = [
+                "Goals", "Assists", "Clean Sheets",
+                "Bonus", "Saves", "Defensive Contributions",
+                "Minutes", "Total Points"
+            ]
 
-    title = f"📌 Player Analysis — {playerA}"
-    if B and B.get("has_data", False):
-        title += f" vs {playerB}"
+            def radar_vals(P):
+                b = P["breakdown_df"].set_index("Category")["Total Points"]
+                vals = []
+                for c in categories:
+                    if c == "Total Points":
+                        vals.append(P["total_points"])
+                    elif c == "Minutes":
+                        vals.append(b.get("Minutes", 0))
+                    else:
+                        vals.append(b.get(c, 0))
+                return vals
 
-    st.title(title)
+            rA = radar_vals(A)
+            rB = radar_vals(B)
 
-    # ------------------------------
-    # Radar Chart for Comparison
-    # ------------------------------
-    if B and A.get("has_data", False) and B.get("has_data", False):
+            fig = go.Figure()
+            fig.add_trace(go.Scatterpolar(r=rA, theta=categories, fill="toself", name=playerA))
+            fig.add_trace(go.Scatterpolar(r=rB, theta=categories, fill="toself", name=playerB))
 
-        categories = [
-            "Goals",
-            "Assists",
-            "Clean Sheets",
-            "Bonus",
-            "Saves",
-            "Defensive Contributions",
-            "Minutes",
-            "Total Points",
-        ]
+            fig.update_layout(
+                title="FPL Points Radar Chart",
+                showlegend=True,
+                polar=dict(radialaxis=dict(visible=True)),
+            )
 
-        def radar_values(data_dict):
-            bd = data_dict["breakdown_df"].set_index("Category")["Total Points"]
-            vals = []
-            for c in categories:
-                if c == "Minutes":
-                    # reconstruct from Category table if present; if not, 0
-                    vals.append(float(bd.get("Minutes", 0)))
-                elif c == "Total Points":
-                    vals.append(float(data_dict["total_points"]))
+            st.plotly_chart(fig, use_container_width=True)
+
+        # -------------------------------------
+        # Contribution Table (with Winner Highlight)
+        # -------------------------------------
+        st.subheader("🧮 FPL Points Contribution")
+        if B and A["has_data"] and B["has_data"]:
+            dfA = A["breakdown_df"].copy()
+            dfB = B["breakdown_df"].copy()
+
+            merged = dfA.merge(dfB, on="Category", suffixes=(" A", " B"))
+
+            def highlight(row):
+                a = row["Total Points A"]
+                b = row["Total Points B"]
+                if a > b:
+                    return ["background-color:#c7f7c7", ""]
+                elif b > a:
+                    return ["", "background-color:#c7f7c7"]
                 else:
-                    vals.append(float(bd.get(c, 0)))
-            return vals
+                    return ["", ""]
 
-        rA = radar_values(A)
-        rB = radar_values(B)
+            styled = merged.style.apply(
+                lambda r: highlight(r),
+                axis=1,
+                subset=["Total Points A", "Total Points B"]
+            )
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatterpolar(
-            r=rA, theta=categories, fill="toself", name=playerA
-        ))
-        fig.add_trace(go.Scatterpolar(
-            r=rB, theta=categories, fill="toself", name=playerB
-        ))
-        fig.update_layout(
-            title="FPL Points Comparison Radar",
-            showlegend=True,
-            polar=dict(radialaxis=dict(visible=True)),
-        )
+            st.dataframe(styled, hide_index=True, width="stretch")
+        else:
+            st.dataframe(A["breakdown_df"], hide_index=True, width="stretch")
 
-        st.plotly_chart(fig, use_container_width=True)
-
-    # ------------------------------
-    # FPL Points Contribution Table
-    # ------------------------------
-    st.markdown("### 🧮 FPL Points Contribution")
-
-    if B and A.get("has_data", False) and B.get("has_data", False):
-        dfA = A["breakdown_df"].copy()
-        dfB = B["breakdown_df"].copy()
-
-        comp = dfA.merge(dfB, on="Category", suffixes=(" A", " B"))
-
-        def winner(row):
-            a, b = row["Total Points A"], row["Total Points B"]
-            if a > b:
-                return ["background-color:#c7f7c7", ""]
-            elif b > a:
-                return ["", "background-color:#c7f7c7"]
-            return ["", ""]
-
-        styled = comp.style.apply(
-            lambda r: winner(r),
-            subset=["Total Points A", "Total Points B"],
-            axis=1,
-        )
-
-        st.dataframe(
-            styled,
-            hide_index=True,
-            width="stretch",
-            height=min(50 * len(comp), 700),
-        )
-
-    elif A.get("has_data", False):
-        st.dataframe(
-            A["breakdown_df"],
-            hide_index=True,
-            width="stretch",
-        )
-
-    # ------------------------------
-    # GW Breakdown Table
-    # ------------------------------
-    if A.get("has_data", False):
-        st.markdown(
-            f"### 📊 Points Breakdown by Gameweek (GW {st.session_state.gw_slider[0]}–{st.session_state.gw_slider[1]})"
-        )
+        # -------------------------------------
+        # Gameweek Breakdown Table
+        # -------------------------------------
+        st.subheader(f"📊 Gameweek Breakdown (GW {st.session_state.gw_slider[0]}–{st.session_state.gw_slider[1]})")
 
         dfh = A["history_df"]
 
@@ -512,46 +448,26 @@ if playerA != "None":
             ("bonus", "Bonus"),
             ("minutes", "Minutes"),
             ("yellow_cards", "Yellow Cards"),
-            ("red_cards", "Red Cards"),
+            ("red_cards", "Red Cards")
         ]
         if A["position"] == "GK":
             cols.append(("saves", "Saves"))
 
-        df_show = dfh[[c[0] for c in cols]].rename(
-            columns={a: b for a, b in cols}
-        )
-
-        st.dataframe(
-            df_show,
-            hide_index=True,
-            width="stretch",
-        )
+        df_show = dfh[[c[0] for c in cols]].rename(columns={a: b for a, b in cols})
+        st.dataframe(df_show, hide_index=True, width="stretch")
 
 
-# =====================================
-# MAIN PAGE TABLE
-# =====================================
+# -----------------------------------------
+# MAIN TABLE
+# -----------------------------------------
 st.markdown("<div class='main-container'>", unsafe_allow_html=True)
-
 st.title("🔥 FPL Analytics Dashboard")
-st.write("Using cached local data for instant loading.")
 
 st.subheader("📊 Player Value Table")
 st.dataframe(
     table,
     hide_index=True,
-    width="stretch",
-    column_config={
-        "Player": st.column_config.TextColumn("Player"),
-        "Team": st.column_config.TextColumn("Team"),
-        "Position": st.column_config.TextColumn("Position"),
-        "Points (GW Range)": st.column_config.NumberColumn("Points (GW Range)"),
-        "Current Price": st.column_config.NumberColumn("Price (£m)"),
-        "Points Per Million": st.column_config.NumberColumn("PPM"),
-        "Selected By %": st.column_config.NumberColumn("Selected %"),
-        "Template Value": st.column_config.NumberColumn("Template Value"),
-        "Differential Value": st.column_config.NumberColumn("Differential Value"),
-    },
+    width="stretch"
 )
 
 st.markdown("</div>", unsafe_allow_html=True)
