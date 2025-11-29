@@ -336,21 +336,25 @@ def build_points_contribution(df_hist: pd.DataFrame, position: str):
             "Saves",
             "Penalty Saves",
             "Penalty Misses",
-            "Defensive Contribution",
         ]
     elif position == "DEF":
         allowed_categories += [
             "Clean Sheets",
             "Goals Conceded",
+            "Penalty Misses",
             "Defensive Contribution",
         ]
     elif position == "MID":
         allowed_categories += [
             "Clean Sheets",
+            "Penalty Misses",
             "Defensive Contribution",
         ]
     elif position == "FWD":
-        allowed_categories += ["Defensive Contribution"]
+        allowed_categories += [
+            "Penalty Misses",
+            "Defensive Contribution",
+        ]
 
     # No history => zero row for each allowed category
     if df_hist.empty:
@@ -427,13 +431,13 @@ def build_points_contribution(df_hist: pd.DataFrame, position: str):
         "Assists": assist_points.sum(),
         "Clean Sheets": cs_points.sum(),
         "Goals Conceded": gc_points.sum(),
+        "Defensive Contribution": dc_points.sum(),
+        "Cards": card_points.sum(),
         "Saves": save_points.sum(),              # 🔹 shots saved only
         "Penalty Saves": pen_save_points.sum(),  # 🔹 separate route
         "Penalty Misses": pen_miss_points.sum(), # 🔹 separate route
-        "Cards": card_points.sum(),
         "Own Goals": og_points.sum(),
         "Bonus": bonus.sum(),
-        "Defensive Contribution": dc_points.sum(),
     }
 
     # Only keep categories relevant for this position
@@ -447,10 +451,6 @@ def build_points_contribution(df_hist: pd.DataFrame, position: str):
         df["% of Total"] = 0.0
 
     return df, float(total_points)
-
-
-
-
 
 # =========================================
 # CONTRIBUTION BAR CHART (points, not normalised)
