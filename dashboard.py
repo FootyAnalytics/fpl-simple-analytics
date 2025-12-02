@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
+import json
 import base64
 import os
-import plotly.graph_objects as go
 import requests
+import plotly.graph_objects as go
 
 # =========================================
 # SESSION STATE DEFAULTS
@@ -57,7 +58,6 @@ def set_background(image_file: str):
             max-width: 2000px !important;
         }}
 
-        /* Hide table index */
         .row_heading.level0 {{display:none}}
         .blank {{display:none}}
         </style>
@@ -66,99 +66,82 @@ def set_background(image_file: str):
     )
 
 
-IMAGE_PATH = "bg1.png"  # make sure this exists in the repo root
+IMAGE_PATH = "bg1.png"
 set_background(IMAGE_PATH)
 
+
 # =========================================
-# FPL API HELPERS
+# LOAD LIVE DATA
 # =========================================
-BASE_URL = "https://fantasy.premierleague.com/api/"
+@st.cache_data(ttl=3600)
+def load_players_live():
+    """Loads live players + team data from the official FPL API."""
+    static = requests.get("https://fantasy.premierleague.com/api/bootstrap-static/").json()
 
-
-@st.cache_data
-def load_players():
-    """
-    Load live player + team data from FPL API (bootstrap-static)
-    and derive min/max finished gameweek.
-    """
-    resp = requests.get(BASE_URL + "bootstrap-static/")
-    resp.raise_for_status()
-    data = resp.json()
-
-    # Players
-    df = pd.DataFrame(data["elements"])
-    teams = (
-        pd.DataFrame(data["teams"])[["id", "name"]]
-        .rename(columns={"id": "team", "name": "Team"})
+    players_df = pd.DataFrame(static["elements"])
+    teams_df = pd.DataFrame(static["teams"])[["id", "name"]].rename(
+        columns={"id": "team", "name": "Team"}
     )
-    df = df.merge(teams, on="team", how="left")
+    players_df = players_df.merge(teams_df, on="team", how="left")
 
-    # Position map
     pos_map = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
-    df["Position"] = df["element_type"].map(pos_map)
+    players_df["Position"] = players_df["element_type"].map(pos_map)
 
-    # Pricing
-    df["Current Price"] = df["now_cost"] / 10.0
+    players_df["Current Price"] = players_df["now_cost"] / 10
+    players_df["Points Per Million (Season)"] = players_df["total_points"] / players_df["Current Price"]
 
-    # Season-level metrics (we still recalc GW-range metrics later)
-    df["Points Per Million (Season)"] = df["total_points"] / df["Current Price"]
-
-    # Selection %
-    df["Selected By (Decimal)"] = (
-        pd.to_numeric(df["selected_by_percent"], errors="coerce") / 100.0
+    players_df["Selected By (Decimal)"] = (
+        pd.to_numeric(players_df["selected_by_percent"], errors="coerce") / 100
     )
-    df["Selected By %"] = df["Selected By (Decimal)"] * 100.0
+    players_df["Selected By %"] = players_df["Selected By (Decimal)"] * 100
 
-    df["Template Value (Season)"] = (
-        df["Points Per Million (Season)"] * df["Selected By (Decimal)"]
+    players_df["Template Value (Season)"] = (
+        players_df["Points Per Million (Season)"] * players_df["Selected By (Decimal)"]
     )
-    df["Differential Value (Season)"] = (
-        df["Points Per Million (Season)"] * (1 - df["Selected By (Decimal)"])
+    players_df["Differential Value (Season)"] = (
+        players_df["Points Per Million (Season)"] * (1 - players_df["Selected By (Decimal)"])
     )
 
-    # Gameweek bounds from events
-    events = pd.DataFrame(data["events"])
-    min_gw = 1
-    if not events.empty:
-        finished_mask = (
-            events["finished"].fillna(False)
-            | events["is_previous"].fillna(False)
-            | events["is_current"].fillna(False)
-        )
-        if finished_mask.any():
-            max_gw = int(events.loc[finished_mask, "id"].max())
-        else:
-            max_gw = int(events["id"].max())
-    else:
-        max_gw = 38
-
-    return df, min_gw, max_gw
+    return players_df, static
 
 
-@st.cache_data
-def load_player_history(player_id: int) -> pd.DataFrame:
-    """
-    Load per-gameweek history for a single player from live FPL API.
-    """
-    resp = requests.get(BASE_URL + f"element-summary/{player_id}/")
-    resp.raise_for_status()
-    data = resp.json()
-    hist = pd.DataFrame(data.get("history", []))
-    return hist
+@st.cache_data(ttl=3600)
+def load_weekly_live(players_df):
+    """Loads weekly history for all players using element-summary."""
+    weekly_data = {}
+    for pid in players_df["id"]:
+        url = f"https://fantasy.premierleague.com/api/element-summary/{pid}/"
+        try:
+            data = requests.get(url).json().get("history", [])
+        except Exception:
+            data = []
+        weekly_data[str(pid)] = data
+
+    return weekly_data
 
 
-players, min_gw, max_gw = load_players()
+players, static_data = load_players_live()
+weekly = load_weekly_live(players)
+
+# Build GW range from all history
+weekly_df = pd.concat([pd.DataFrame(v) for v in weekly.values()], ignore_index=True)
+min_gw = int(weekly_df["round"].min())
+max_gw = int(weekly_df["round"].max())
+
+# Team lookup for Opponent
+team_lookup = {
+    int(row["id"]): row["name"]
+    for _, row in pd.DataFrame(static_data["teams"]).iterrows()
+}
+
 
 # =========================================
 # RESET LOGIC
 # =========================================
 def trigger_reset():
-    """Set a flag so reset happens next run before widgets."""
     st.session_state.reset_flag = True
 
-
 def apply_reset():
-    """Reset filters, selection, and view mode."""
     st.session_state.team_filter = "All Teams"
     st.session_state.position_filter = "All"
     st.session_state.gw_slider = (min_gw, max_gw)
@@ -176,7 +159,7 @@ if st.session_state.reset_flag:
 
 
 # =========================================
-# SIDEBAR FILTERS & CONTROLS
+# SIDEBAR FILTERS
 # =========================================
 st.sidebar.title("🔍 Filters")
 
@@ -213,26 +196,24 @@ sort_column = st.sidebar.selectbox(
     key="sort_column",
 )
 
-sort_order = st.sidebar.radio(
-    "Sort Order",
-    ["Descending", "Ascending"],
-    key="sort_order",
-)
+sort_order = st.sidebar.radio("Sort Order", ["Descending", "Ascending"], key="sort_order")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("👤 Player Analysis / Comparison")
 
+
+# Primary
 primary_select = st.sidebar.selectbox(
     "Primary Player",
     ["None"] + sorted(players["web_name"].unique()),
     key="selected_player",
 )
 
-# Constrain comparison choices to same position as primary
+# Restrict comparison to same position
 if primary_select != "None":
-    primary_pos = players.loc[players["web_name"] == primary_select, "Position"].iloc[0]
+    pos = players.loc[players["web_name"] == primary_select, "Position"].iloc[0]
     compare_options = ["None"] + sorted(
-        players.loc[players["Position"] == primary_pos, "web_name"].unique()
+        players[players["Position"] == pos]["web_name"].unique()
     )
 else:
     compare_options = ["None"] + sorted(players["web_name"].unique())
@@ -258,7 +239,6 @@ with col_btn2:
             chosen.append(st.session_state.selected_player)
         if st.session_state.compare_dropdown != "None":
             chosen.append(st.session_state.compare_dropdown)
-        # Deduplicate while preserving order
         chosen = list(dict.fromkeys(chosen))
         if len(chosen) >= 2:
             st.session_state.compare_players = chosen[:2]
@@ -269,19 +249,19 @@ st.sidebar.button("🔄 Reset All Filters", on_click=trigger_reset)
 
 
 # =========================================
-# HELPER: GW RANGE POINTS (live, cached)
+# GW RANGE CALC
 # =========================================
-@st.cache_data
-def get_points_for_range(player_id: int, gw1: int, gw2: int) -> int:
-    df = load_player_history(player_id)
-    if df.empty:
+def get_points_for_range(pid, gw1, gw2):
+    hist = weekly.get(str(pid), [])
+    if not hist:
         return 0
+    df = pd.DataFrame(hist)
     df = df[(df["round"] >= gw1) & (df["round"] <= gw2)]
     return int(df["total_points"].sum())
 
 
 # =========================================
-# FILTER + TABLE BUILD
+# MAIN TABLE BUILD
 # =========================================
 filtered = players.copy()
 
@@ -292,7 +272,7 @@ if position_filter != "All":
     filtered = filtered[filtered["Position"] == position_filter]
 
 filtered["Points (GW Range)"] = filtered.apply(
-    lambda row: get_points_for_range(int(row["id"]), gw_start, gw_end),
+    lambda r: get_points_for_range(r["id"], gw_start, gw_end),
     axis=1,
 )
 
@@ -309,24 +289,22 @@ table = filtered[
 
 table["Points Per Million"] = table["Points (GW Range)"] / table["Current Price"]
 
-sel_decimal = table["Selected By %"] / 100.0
+sel_decimal = table["Selected By %"] / 100
 table["Template Value"] = table["Points Per Million"] * sel_decimal
 table["Differential Value"] = table["Points Per Million"] * (1 - sel_decimal)
 
-round_cols = [
+for c in [
     "Current Price",
     "Points (GW Range)",
     "Points Per Million",
     "Selected By %",
     "Template Value",
     "Differential Value",
-]
-table[round_cols] = table[round_cols].round(2)
+]:
+    table[c] = table[c].round(2)
 
 ascending = sort_order == "Ascending"
 table = table.sort_values(by=sort_column, ascending=ascending)
-
-
 # =========================================
 # CONTRIBUTION CALCULATION
 # =========================================
@@ -371,9 +349,7 @@ def build_points_contribution(df_hist: pd.DataFrame, position: str):
     # No history => zero row for each allowed category
     if df_hist.empty:
         contrib = {cat: 0 for cat in allowed_categories}
-        df = pd.DataFrame(
-            {"Category": list(contrib.keys()), "Points": list(contrib.values())}
-        )
+        df = pd.DataFrame({"Category": list(contrib.keys()), "Points": list(contrib.values())})
         df["% of Total"] = 0.0
         return df, 0.0
 
@@ -420,9 +396,9 @@ def build_points_contribution(df_hist: pd.DataFrame, position: str):
         gc_points = pd.Series(0, index=df_hist.index)
 
     # Saves & penalties — all separate
-    save_points = (saves // 3) * 1                  # normal shots saved only
-    pen_save_points = pen_saved * 5                 # each penalty save
-    pen_miss_points = pen_missed * -2              # each penalty missed
+    save_points = (saves // 3) * 1                 # normal shots saved only
+    pen_save_points = pen_saved * 5                # each penalty save
+    pen_miss_points = pen_missed * -2              # each penalty missed (by teammate)
 
     # Cards
     card_points = yc * -1 + rc * -3
@@ -470,7 +446,7 @@ def build_points_contribution(df_hist: pd.DataFrame, position: str):
 
 
 # =========================================
-# CONTRIBUTION BAR CHART (points, not normalised)
+# CONTRIBUTION BAR CHART (points)
 # =========================================
 def build_contrib_bar(contrib_dfs, names):
     categories = [
@@ -507,6 +483,7 @@ def build_contrib_bar(contrib_dfs, names):
 
 # =========================================
 # GW BREAKDOWN + OUTLIER ❗ + SPARKLINE
+# Now includes Opponent with (H)/(A)
 # =========================================
 def build_gw_breakdown(df_hist: pd.DataFrame, gw1: int, gw2: int):
     df = df_hist[(df_hist["round"] >= gw1) & (df_hist["round"] <= gw2)].copy()
@@ -514,8 +491,24 @@ def build_gw_breakdown(df_hist: pd.DataFrame, gw1: int, gw2: int):
         return None, None
 
     df = df.sort_values("round")
+
+    # Basic stats
     df["Gameweek"] = df["round"].astype(int)
     df["Points"] = df["total_points"].fillna(0).astype(int)
+
+    # Opponent with home/away indicator
+    # Uses team_lookup built from bootstrap-static
+    def get_opp_label(row):
+        opp_id = row.get("opponent_team", None)
+        if pd.isna(opp_id):
+            return ""
+        opp_id = int(opp_id)
+        opp_name = team_lookup.get(opp_id, f"Team {opp_id}")
+        is_home = bool(row.get("was_home", False))
+        suffix = "(H)" if is_home else "(A)"
+        return f"{opp_name} {suffix}"
+
+    df["Opponent"] = df.apply(get_opp_label, axis=1)
 
     total = df["Points"].sum()
     if total > 0:
@@ -523,10 +516,9 @@ def build_gw_breakdown(df_hist: pd.DataFrame, gw1: int, gw2: int):
     else:
         pct_vals = pd.Series(0, index=df.index)
 
-    # Base % contribution as string
     pct_str = pct_vals.round(1).astype(str) + "%"
 
-    # Outliers: HIGH ONLY (z >= 1.5)
+    # Outliers: high weeks only (z >= 1.5)
     if df["Points"].std(ddof=0) != 0:
         z = (df["Points"] - df["Points"].mean()) / df["Points"].std(ddof=0)
     else:
@@ -541,7 +533,7 @@ def build_gw_breakdown(df_hist: pd.DataFrame, gw1: int, gw2: int):
 
     df["% Contribution"] = pct_with_icon
 
-    df_view = df[["Gameweek", "Points", "% Contribution"]].copy()
+    df_view = df[["Gameweek", "Opponent", "Points", "% Contribution"]].copy()
     spark_data = df["Points"].tolist()
     return df_view, spark_data
 
@@ -559,6 +551,7 @@ def render_gw_breakdown(name: str, df_hist: pd.DataFrame, gw1: int, gw2: int):
     row_height = 35
     header_height = 40
     height = header_height + n_rows * row_height
+
     st.dataframe(
         df_view,
         width="stretch",
@@ -583,8 +576,6 @@ def render_gw_breakdown(name: str, df_hist: pd.DataFrame, gw1: int, gw2: int):
         yaxis=dict(title="Pts"),
     )
     st.plotly_chart(fig, use_container_width=True)
-
-
 # =========================================
 # OVERLAY (SINGLE & COMPARE)
 # =========================================
@@ -614,11 +605,12 @@ def show_overlay(player_names, gw1, gw2):
         price = float(p_row["Current Price"])
         selected_pct = float(p_row["Selected By %"].round(2))
 
-        df_hist = load_player_history(pid)
-        if df_hist.empty:
+        history = weekly.get(str(pid), [])
+        if not history:
             st.info(f"No weekly data available for **{name}**.")
             continue
 
+        df_hist = pd.DataFrame(history)
         df_hist_range = df_hist[(df_hist["round"] >= gw1) & (df_hist["round"] <= gw2)]
 
         contrib_df, total_pts = build_points_contribution(df_hist_range, pos)
@@ -637,90 +629,93 @@ def show_overlay(player_names, gw1, gw2):
 
     if not contrib_dfs:
         st.info("No contribution data found for the selected players in this range.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # GW-range summary
+    st.markdown("### 🔍 GW-Range Summary")
+    meta_df = pd.DataFrame(meta_rows)
+    st.dataframe(meta_df, width="stretch", hide_index=True)
+
+    # FPL Points Contribution
+    st.markdown("### 📊 FPL Points Contribution")
+
+    if len(player_names) == 1:
+        # Single player
+        df_single = contrib_dfs[0].copy()
+        df_single["Points"] = df_single["Points"].astype(int)
+
+        n_rows = len(df_single)
+        row_height = 35
+        header_height = 40
+        height = header_height + n_rows * row_height
+
+        st.dataframe(df_single, width="stretch", hide_index=True, height=height)
+
     else:
-        # GW-range summary
-        st.markdown("### 🔍 GW-Range Summary")
-        meta_df = pd.DataFrame(meta_rows)
-        st.dataframe(meta_df, width="stretch", hide_index=True)
+        # Comparison table with "points (xx.x%)" and ⭐ for winner
+        cats = contrib_dfs[0]["Category"].tolist()
+        comp_display = pd.DataFrame({"Category": cats})
 
-        # FPL Points Contribution
-        st.markdown("### 📊 FPL Points Contribution")
+        num_players = len(player_names)
+        points_matrix = [
+            [contrib_dfs[i]["Points"].iloc[row_i] for i in range(num_players)]
+            for row_i in range(len(cats))
+        ]
+        row_max = [max(row) for row in points_matrix]
 
-        if len(player_names) == 1:
-            # Single player: simple table with numeric columns, dynamic height
-            df_single = contrib_dfs[0].copy()
-            df_single["Points"] = df_single["Points"].astype(int)
+        for i, (name, contrib_df, total_pts) in enumerate(
+            zip(player_names, contrib_dfs, totals)
+        ):
+            formatted_cells = []
+            pts_series = contrib_df["Points"].tolist()
+            for row_i, pts in enumerate(pts_series):
+                pts_int = int(pts)
+                if total_pts > 0:
+                    pct = pts / total_pts * 100
+                else:
+                    pct = 0.0
 
-            n_rows = len(df_single)
-            row_height = 35
-            header_height = 40
-            height = header_height + n_rows * row_height
+                cell_text = f"{pts_int} ({pct:.1f}%)"
+                if pts == row_max[row_i] and pts != 0:
+                    cell_text += " ⭐"
+                formatted_cells.append(cell_text)
+            comp_display[name] = formatted_cells
 
-            st.dataframe(df_single, width="stretch", hide_index=True, height=height)
-        else:
-            # Comparison table with "points (xx.x%)" and ⭐ for winner, dynamic height
-            cats = contrib_dfs[0]["Category"].tolist()
-            comp_display = pd.DataFrame({"Category": cats})
+        n_rows = len(comp_display)
+        row_height = 35
+        header_height = 40
+        height = header_height + n_rows * row_height
 
-            # Compute per-row max (on raw Points)
-            num_players = len(player_names)
-            points_matrix = [
-                [contrib_dfs[i]["Points"].iloc[row_i] for i in range(num_players)]
-                for row_i in range(len(cats))
-            ]
-            row_max = [max(row) for row in points_matrix]
+        st.dataframe(comp_display, width="stretch", hide_index=True, height=height)
 
-            for i, (name, contrib_df, total_pts) in enumerate(
-                zip(player_names, contrib_dfs, totals)
-            ):
-                formatted_cells = []
-                pts_series = contrib_df["Points"].tolist()
-                for row_i, pts in enumerate(pts_series):
-                    pts_int = int(pts)
-                    if total_pts > 0:
-                        pct = pts / total_pts * 100
-                    else:
-                        pct = 0.0
+    # Contribution bar chart
+    st.markdown("### 📊 Contribution by Category")
+    bar_fig = build_contrib_bar(contrib_dfs, player_names)
+    st.plotly_chart(bar_fig, use_container_width=True)
 
-                    cell_text = f"{pts_int} ({pct:.1f}%)"
-                    # Add gold star if this player is the winner in this row
-                    if pts == row_max[row_i] and pts != 0:
-                        cell_text += " ⭐"
-                    formatted_cells.append(cell_text)
-                comp_display[name] = formatted_cells
-
-            n_rows = len(comp_display)
-            row_height = 35
-            header_height = 40
-            height = header_height + n_rows * row_height
-
-            st.dataframe(comp_display, width="stretch", hide_index=True, height=height)
-
-        # Contribution bar chart
-        st.markdown("### 📊 Contribution by Category")
-        bar_fig = build_contrib_bar(contrib_dfs, player_names)
-        st.plotly_chart(bar_fig, use_container_width=True)
-
-        # GW breakdowns
-        st.markdown("### 📅 Points Breakdown by Gameweek")
-        if len(player_names) == 1:
-            name = player_names[0]
-            p_row = players[players["web_name"] == name].iloc[0]
-            pid = int(p_row["id"])
-            df_hist = load_player_history(pid)
-            if not df_hist.empty:
+    # GW breakdowns
+    st.markdown("### 📅 Points Breakdown by Gameweek")
+    if len(player_names) == 1:
+        name = player_names[0]
+        p_row = players[players["web_name"] == name].iloc[0]
+        pid = int(p_row["id"])
+        history = weekly.get(str(pid), [])
+        if history:
+            df_hist = pd.DataFrame(history)
+            render_gw_breakdown(name, df_hist, gw1, gw2)
+    else:
+        cols = st.columns(len(player_names))
+        for col, name in zip(cols, player_names):
+            with col:
+                p_row = players[players["web_name"] == name].iloc[0]
+                pid = int(p_row["id"])
+                history = weekly.get(str(pid), [])
+                if not history:
+                    st.info(f"No data for {name}.")
+                    continue
+                df_hist = pd.DataFrame(history)
                 render_gw_breakdown(name, df_hist, gw1, gw2)
-        else:
-            cols = st.columns(len(player_names))
-            for col, name in zip(cols, player_names):
-                with col:
-                    p_row = players[players["web_name"] == name].iloc[0]
-                    pid = int(p_row["id"])
-                    df_hist = load_player_history(pid)
-                    if df_hist.empty:
-                        st.info(f"No data for {name}.")
-                        continue
-                    render_gw_breakdown(name, df_hist, gw1, gw2)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -731,7 +726,7 @@ def show_overlay(player_names, gw1, gw2):
 st.markdown("<div class='main-container'>", unsafe_allow_html=True)
 
 st.title("🔥 FPL Simple Analytics")
-st.write("Using live FPL data (cached) with GW-range value metrics and player analysis.")
+st.write("Using live FPL data with GW-range value metrics and player analysis.")
 
 # Overlay for view / comparison
 if st.session_state.view_mode == "single" and st.session_state.selected_player != "None":
