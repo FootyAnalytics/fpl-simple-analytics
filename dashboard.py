@@ -451,22 +451,27 @@ def build_points_contribution(df_hist: pd.DataFrame, position: str):
 def build_contrib_bar(contrib_dfs, names):
     """
     Bar chart now mirrors the exact categories shown in the FPL Contribution Table.
-    It dynamically shows only the relevant categories based on player positions.
+    Dynamically includes all categories present in contrib_dfs (Penalty Saves, Penalty Misses, etc).
     """
 
-    # Determine union of all categories across all players in comparison
+    # 1) Build union of ALL categories from ALL contribution tables
     categories = []
     for df in contrib_dfs:
-        cats = df["Category"].tolist()
-        for c in cats:
+        for c in df["Category"].tolist():
             if c not in categories:
                 categories.append(c)
 
+    # 2) Create bar chart
     fig = go.Figure()
 
     for name, df_c in zip(names, contrib_dfs):
         d = df_c.set_index("Category")
-        values = [float(d.loc[c, "Points"]) if c in d.index else 0.0 for c in categories]
+
+        # Ensure each category gets a value, even if missing for the position
+        values = [
+            float(d.loc[c, "Points"]) if c in d.index else 0.0
+            for c in categories
+        ]
 
         fig.add_trace(
             go.Bar(
@@ -476,6 +481,7 @@ def build_contrib_bar(contrib_dfs, names):
             )
         )
 
+    # 3) Layout
     fig.update_layout(
         barmode="group",
         xaxis_title="Category",
@@ -485,8 +491,6 @@ def build_contrib_bar(contrib_dfs, names):
     )
 
     return fig
-
-
 
 # =========================================
 # GW BREAKDOWN + OUTLIER ❗ + SPARKLINE
@@ -798,4 +802,5 @@ if st.session_state.view_mode == "main":
     )
 
 st.markdown("</div>", unsafe_allow_html=True)
+
 
