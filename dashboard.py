@@ -3,31 +3,31 @@ import pandas as pd
 import json
 import base64
 import os
-import requests
 import plotly.graph_objects as go
+import requests
 
-# =========================================
+# ==========================================================================
 # SESSION STATE DEFAULTS
-# =========================================
+# ==========================================================================
 if "view_mode" not in st.session_state:
     st.session_state.view_mode = "main"  # "main", "single", "compare"
 
-if "selected_player" not in st.session_state:
-    st.session_state.selected_player = "None"
+if "selected_player_id" not in st.session_state:
+    st.session_state.selected_player_id = None
 
-if "compare_players" not in st.session_state:
-    st.session_state.compare_players = []
+if "compare_players_ids" not in st.session_state:
+    st.session_state.compare_players_ids = []
 
-if "compare_dropdown" not in st.session_state:
-    st.session_state.compare_dropdown = "None"
+if "compare_dropdown_id" not in st.session_state:
+    st.session_state.compare_dropdown_id = None
 
 if "reset_flag" not in st.session_state:
     st.session_state.reset_flag = False
 
 
-# =========================================
+# ==========================================================================
 # BACKGROUND IMAGE
-# =========================================
+# ==========================================================================
 def set_background(image_file: str):
     if not os.path.exists(image_file):
         return
@@ -66,90 +66,116 @@ def set_background(image_file: str):
     )
 
 
-IMAGE_PATH = "bg1.png"
+IMAGE_PATH = "bg1.png"  # make sure this exists in the repo root
 set_background(IMAGE_PATH)
 
 
-# =========================================
-# LOAD LIVE DATA
-# =========================================
-@st.cache_data(ttl=3600)
-def load_players_live():
-    """Loads live players + team data from the official FPL API."""
-    static = requests.get("https://fantasy.premierleague.com/api/bootstrap-static/").json()
+# ==========================================================================
+# LOCAL CACHE PATHS (for weekly history)
+# ==========================================================================
+CACHE_DIR = "cache"
+WEEKLY_FILE = os.path.join(CACHE_DIR, "weekly.json")
 
-    players_df = pd.DataFrame(static["elements"])
-    teams_df = pd.DataFrame(static["teams"])[["id", "name"]].rename(
-        columns={"id": "team", "name": "Team"}
+
+# ==========================================================================
+# LIVE FPL BOOTSTRAP
+# ==========================================================================
+@st.cache_data
+def fetch_bootstrap() -> dict:
+    resp = requests.get("https://fantasy.premierleague.com/api/bootstrap-static/")
+    resp.raise_for_status()
+    return resp.json()
+
+
+bootstrap_data = fetch_bootstrap()
+TEAMS_DF = pd.DataFrame(bootstrap_data["teams"])
+TEAM_MAP = dict(zip(TEAMS_DF["id"], TEAMS_DF["name"]))
+
+
+# ==========================================================================
+# LOADERS
+# ==========================================================================
+@st.cache_data
+def load_players() -> pd.DataFrame:
+    data = fetch_bootstrap()  # cached
+    df = pd.DataFrame(data["elements"])
+
+    teams = (
+        pd.DataFrame(data["teams"])[["id", "name"]]
+        .rename(columns={"id": "team", "name": "Team"})
     )
-    players_df = players_df.merge(teams_df, on="team", how="left")
+    df = df.merge(teams, on="team", how="left")
 
+    # Names
+    df["full_name"] = df["first_name"] + " " + df["second_name"]
+    df["display_name"] = df["full_name"] + " (" + df["Team"] + ")"
+
+    # Position map
     pos_map = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
-    players_df["Position"] = players_df["element_type"].map(pos_map)
+    df["Position"] = df["element_type"].map(pos_map)
 
-    players_df["Current Price"] = players_df["now_cost"] / 10
-    players_df["Points Per Million (Season)"] = players_df["total_points"] / players_df["Current Price"]
+    # Pricing
+    df["Current Price"] = df["now_cost"] / 10.0
 
-    players_df["Selected By (Decimal)"] = (
-        pd.to_numeric(players_df["selected_by_percent"], errors="coerce") / 100
+    # Season-level metrics (we still recalc GW-range metrics later)
+    df["Points Per Million (Season)"] = df["total_points"] / df["Current Price"]
+
+    # Selection %
+    df["Selected By (Decimal)"] = (
+        pd.to_numeric(df["selected_by_percent"], errors="coerce") / 100.0
     )
-    players_df["Selected By %"] = players_df["Selected By (Decimal)"] * 100
+    df["Selected By %"] = df["Selected By (Decimal)"] * 100.0
 
-    players_df["Template Value (Season)"] = (
-        players_df["Points Per Million (Season)"] * players_df["Selected By (Decimal)"]
+    df["Template Value (Season)"] = (
+        df["Points Per Million (Season)"] * df["Selected By (Decimal)"]
     )
-    players_df["Differential Value (Season)"] = (
-        players_df["Points Per Million (Season)"] * (1 - players_df["Selected By (Decimal)"])
+    df["Differential Value (Season)"] = (
+        df["Points Per Million (Season)"] * (1 - df["Selected By (Decimal)"])
     )
 
-    return players_df, static
+    return df
 
 
-@st.cache_data(ttl=3600)
-def load_weekly_live(players_df):
-    """Loads weekly history for all players using element-summary."""
-    weekly_data = {}
-    for pid in players_df["id"]:
-        url = f"https://fantasy.premierleague.com/api/element-summary/{pid}/"
-        try:
-            data = requests.get(url).json().get("history", [])
-        except Exception:
-            data = []
-        weekly_data[str(pid)] = data
-
-    return weekly_data
+@st.cache_data
+def load_weekly() -> dict:
+    with open(WEEKLY_FILE, "r") as f:
+        return json.load(f)
 
 
-players, static_data = load_players_live()
-weekly = load_weekly_live(players)
+players = load_players()
+weekly = load_weekly()
 
-# Build GW range from all history
-weekly_df = pd.concat([pd.DataFrame(v) for v in weekly.values()], ignore_index=True)
+# Dict for fast lookup by ID
+players_by_id = {int(row["id"]): row for _, row in players.iterrows()}
+
+# Build combined weekly df for slider bounds
+weekly_df = pd.concat(
+    [pd.DataFrame(v) for v in weekly.values()],
+    ignore_index=True,
+)
+
 min_gw = int(weekly_df["round"].min())
 max_gw = int(weekly_df["round"].max())
 
-# Team lookup for Opponent
-team_lookup = {
-    int(row["id"]): row["name"]
-    for _, row in pd.DataFrame(static_data["teams"]).iterrows()
-}
 
-
-# =========================================
+# ==========================================================================
 # RESET LOGIC
-# =========================================
+# ==========================================================================
 def trigger_reset():
+    """Set a flag so reset happens next run before widgets."""
     st.session_state.reset_flag = True
 
+
 def apply_reset():
+    """Reset filters, selection, and view mode."""
     st.session_state.team_filter = "All Teams"
     st.session_state.position_filter = "All"
     st.session_state.gw_slider = (min_gw, max_gw)
     st.session_state.sort_column = "Points (GW Range)"
     st.session_state.sort_order = "Descending"
-    st.session_state.selected_player = "None"
-    st.session_state.compare_dropdown = "None"
-    st.session_state.compare_players = []
+    st.session_state.selected_player_id = None
+    st.session_state.compare_dropdown_id = None
+    st.session_state.compare_players_ids = []
     st.session_state.view_mode = "main"
 
 
@@ -158,9 +184,9 @@ if st.session_state.reset_flag:
     st.session_state.reset_flag = False
 
 
-# =========================================
-# SIDEBAR FILTERS
-# =========================================
+# ==========================================================================
+# SIDEBAR FILTERS & UNIQUE PLAYER CONTROLS
+# ==========================================================================
 st.sidebar.title("🔍 Filters")
 
 team_filter = st.sidebar.selectbox(
@@ -196,73 +222,85 @@ sort_column = st.sidebar.selectbox(
     key="sort_column",
 )
 
-sort_order = st.sidebar.radio("Sort Order", ["Descending", "Ascending"], key="sort_order")
+sort_order = st.sidebar.radio(
+    "Sort Order",
+    ["Descending", "Ascending"],
+    key="sort_order",
+)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("👤 Player Analysis / Comparison")
 
-
-# Primary
-primary_select = st.sidebar.selectbox(
+# ---- PRIMARY PLAYER SELECT (ID keyed) ----
+primary_options = {row["display_name"]: int(row["id"]) for _, row in players.iterrows()}
+primary_display = st.sidebar.selectbox(
     "Primary Player",
-    ["None"] + sorted(players["web_name"].unique()),
-    key="selected_player",
+    ["None"] + list(primary_options.keys()),
 )
 
-# Restrict comparison to same position
-if primary_select != "None":
-    pos = players.loc[players["web_name"] == primary_select, "Position"].iloc[0]
-    compare_options = ["None"] + sorted(
-        players[players["Position"] == pos]["web_name"].unique()
-    )
+if primary_display == "None":
+    st.session_state.selected_player_id = None
 else:
-    compare_options = ["None"] + sorted(players["web_name"].unique())
+    st.session_state.selected_player_id = primary_options[primary_display]
 
-compare_select = st.sidebar.selectbox(
-    "Second Player (same position)",
-    compare_options,
-    key="compare_dropdown",
+# ---- COMPARISON PLAYER (same position as primary) ----
+if st.session_state.selected_player_id is not None:
+    primary_pos = players_by_id[st.session_state.selected_player_id]["Position"]
+    df_pos = players[players["Position"] == primary_pos]
+    compare_options = {row["display_name"]: int(row["id"]) for _, row in df_pos.iterrows()}
+else:
+    compare_options = {row["display_name"]: int(row["id"]) for _, row in players.iterrows()}
+
+compare_display = st.sidebar.selectbox(
+    "Second Player",
+    ["None"] + list(compare_options.keys()),
 )
 
+if compare_display == "None":
+    st.session_state.compare_dropdown_id = None
+else:
+    st.session_state.compare_dropdown_id = compare_options[compare_display]
+
+# ---- ACTION BUTTONS ----
 col_btn1, col_btn2 = st.sidebar.columns(2)
 
 with col_btn1:
     if st.button("View Player"):
-        if st.session_state.selected_player != "None":
+        if st.session_state.selected_player_id is not None:
             st.session_state.view_mode = "single"
-            st.session_state.compare_players = [st.session_state.selected_player]
+            st.session_state.compare_players_ids = [st.session_state.selected_player_id]
 
 with col_btn2:
     if st.button("Compare Players"):
         chosen = []
-        if st.session_state.selected_player != "None":
-            chosen.append(st.session_state.selected_player)
-        if st.session_state.compare_dropdown != "None":
-            chosen.append(st.session_state.compare_dropdown)
+        if st.session_state.selected_player_id is not None:
+            chosen.append(st.session_state.selected_player_id)
+        if st.session_state.compare_dropdown_id is not None:
+            chosen.append(st.session_state.compare_dropdown_id)
         chosen = list(dict.fromkeys(chosen))
         if len(chosen) >= 2:
-            st.session_state.compare_players = chosen[:2]
+            st.session_state.compare_players_ids = chosen[:2]
             st.session_state.view_mode = "compare"
 
 st.sidebar.markdown("---")
 st.sidebar.button("🔄 Reset All Filters", on_click=trigger_reset)
 
 
-# =========================================
-# GW RANGE CALC
-# =========================================
-def get_points_for_range(pid, gw1, gw2):
-    hist = weekly.get(str(pid), [])
-    if not hist:
+# ==========================================================================
+# HELPER: GW RANGE POINTS
+# ==========================================================================
+def get_points_for_range(player_id: int, gw1: int, gw2: int) -> int:
+    history = weekly.get(str(player_id), [])
+    if not history:
         return 0
-    df = pd.DataFrame(hist)
+    df = pd.DataFrame(history)
     df = df[(df["round"] >= gw1) & (df["round"] <= gw2)]
     return int(df["total_points"].sum())
 
 
-# =========================================
-# MAIN TABLE BUILD
-# =========================================
+# ==========================================================================
+# FILTER + TABLE BUILD
+# ==========================================================================
 filtered = players.copy()
 
 if team_filter != "All Teams":
@@ -272,42 +310,44 @@ if position_filter != "All":
     filtered = filtered[filtered["Position"] == position_filter]
 
 filtered["Points (GW Range)"] = filtered.apply(
-    lambda r: get_points_for_range(r["id"], gw_start, gw_end),
+    lambda row: get_points_for_range(int(row["id"]), gw_start, gw_end),
     axis=1,
 )
 
 table = filtered[
     [
-        "web_name",
+        "display_name",
         "Team",
         "Position",
         "Points (GW Range)",
         "Current Price",
         "Selected By %",
     ]
-].rename(columns={"web_name": "Player"})
+].rename(columns={"display_name": "Player"})
 
 table["Points Per Million"] = table["Points (GW Range)"] / table["Current Price"]
 
-sel_decimal = table["Selected By %"] / 100
+sel_decimal = table["Selected By %"] / 100.0
 table["Template Value"] = table["Points Per Million"] * sel_decimal
 table["Differential Value"] = table["Points Per Million"] * (1 - sel_decimal)
 
-for c in [
+round_cols = [
     "Current Price",
     "Points (GW Range)",
     "Points Per Million",
     "Selected By %",
     "Template Value",
     "Differential Value",
-]:
-    table[c] = table[c].round(2)
+]
+table[round_cols] = table[round_cols].round(2)
 
 ascending = sort_order == "Ascending"
 table = table.sort_values(by=sort_column, ascending=ascending)
-# =========================================
+
+
+# ==========================================================================
 # CONTRIBUTION CALCULATION
-# =========================================
+# ==========================================================================
 def build_points_contribution(df_hist: pd.DataFrame, position: str):
     """
     df_hist: weekly history for a single player filtered to GW range.
@@ -398,7 +438,7 @@ def build_points_contribution(df_hist: pd.DataFrame, position: str):
     # Saves & penalties — all separate
     save_points = (saves // 3) * 1                 # normal shots saved only
     pen_save_points = pen_saved * 5                # each penalty save
-    pen_miss_points = pen_missed * -2              # each penalty missed (by teammate)
+    pen_miss_points = pen_missed * -2             # each penalty missed
 
     # Cards
     card_points = yc * -1 + rc * -3
@@ -431,11 +471,9 @@ def build_points_contribution(df_hist: pd.DataFrame, position: str):
     }
 
     # Only keep categories relevant for this position
-    filtered_contrib = {cat: raw_contrib[cat] for cat in allowed_categories}
+    filtered = {cat: raw_contrib[cat] for cat in allowed_categories}
 
-    df = pd.DataFrame(
-        {"Category": list(filtered_contrib.keys()), "Points": list(filtered_contrib.values())}
-    )
+    df = pd.DataFrame({"Category": list(filtered.keys()), "Points": list(filtered.values())})
 
     if total_points > 0:
         df["% of Total"] = (df["Points"] / total_points * 100).round(1)
@@ -445,34 +483,20 @@ def build_points_contribution(df_hist: pd.DataFrame, position: str):
     return df, float(total_points)
 
 
-# =========================================
-# CONTRIBUTION BAR CHART (points)
-# =========================================
+# ==========================================================================
+# CONTRIBUTION BAR CHART (points, dynamic categories)
+# ==========================================================================
 def build_contrib_bar(contrib_dfs, names):
-    """
-    Bar chart now mirrors the exact categories shown in the FPL Contribution Table.
-    Dynamically includes all categories present in contrib_dfs (Penalty Saves, Penalty Misses, etc).
-    """
+    # Union of all categories appearing in any contribution DF
+    all_cats = set()
+    for df_c in contrib_dfs:
+        all_cats.update(df_c["Category"].tolist())
+    categories = sorted(all_cats)
 
-    # 1) Build union of ALL categories from ALL contribution tables
-    categories = []
-    for df in contrib_dfs:
-        for c in df["Category"].tolist():
-            if c not in categories:
-                categories.append(c)
-
-    # 2) Create bar chart
     fig = go.Figure()
-
     for name, df_c in zip(names, contrib_dfs):
         d = df_c.set_index("Category")
-
-        # Ensure each category gets a value, even if missing for the position
-        values = [
-            float(d.loc[c, "Points"]) if c in d.index else 0.0
-            for c in categories
-        ]
-
+        values = [float(d.loc[c, "Points"]) if c in d.index else 0.0 for c in categories]
         fig.add_trace(
             go.Bar(
                 x=categories,
@@ -481,45 +505,27 @@ def build_contrib_bar(contrib_dfs, names):
             )
         )
 
-    # 3) Layout
     fig.update_layout(
         barmode="group",
         xaxis_title="Category",
         yaxis_title="Points",
-        margin=dict(l=40, r=40, t=40, b=40),
         showlegend=True,
+        margin=dict(l=40, r=40, t=40, b=40),
     )
-
     return fig
 
-# =========================================
-# GW BREAKDOWN + OUTLIER ❗ + SPARKLINE
-# Now includes Opponent with (H)/(A)
-# =========================================
+
+# ==========================================================================
+# GW BREAKDOWN + OUTLIER ❗ + SPARKLINE + FIXTURE
+# ==========================================================================
 def build_gw_breakdown(df_hist: pd.DataFrame, gw1: int, gw2: int):
     df = df_hist[(df_hist["round"] >= gw1) & (df_hist["round"] <= gw2)].copy()
     if df.empty:
         return None, None
 
     df = df.sort_values("round")
-
-    # Basic stats
     df["Gameweek"] = df["round"].astype(int)
     df["Points"] = df["total_points"].fillna(0).astype(int)
-
-    # Opponent with home/away indicator
-    # Uses team_lookup built from bootstrap-static
-    def get_opp_label(row):
-        opp_id = row.get("opponent_team", None)
-        if pd.isna(opp_id):
-            return ""
-        opp_id = int(opp_id)
-        opp_name = team_lookup.get(opp_id, f"Team {opp_id}")
-        is_home = bool(row.get("was_home", False))
-        suffix = "(H)" if is_home else "(A)"
-        return f"{opp_name} {suffix}"
-
-    df["Opponent"] = df.apply(get_opp_label, axis=1)
 
     total = df["Points"].sum()
     if total > 0:
@@ -527,9 +533,10 @@ def build_gw_breakdown(df_hist: pd.DataFrame, gw1: int, gw2: int):
     else:
         pct_vals = pd.Series(0, index=df.index)
 
+    # Base % contribution as string
     pct_str = pct_vals.round(1).astype(str) + "%"
 
-    # Outliers: high weeks only (z >= 1.5)
+    # Outliers: HIGH ONLY (z >= 1.5)
     if df["Points"].std(ddof=0) != 0:
         z = (df["Points"] - df["Points"].mean()) / df["Points"].std(ddof=0)
     else:
@@ -544,7 +551,26 @@ def build_gw_breakdown(df_hist: pd.DataFrame, gw1: int, gw2: int):
 
     df["% Contribution"] = pct_with_icon
 
-    df_view = df[["Gameweek", "Opponent", "Points", "% Contribution"]].copy()
+    # Fixture column using opponent + H/A if present
+    if "opponent_team" in df.columns:
+        opp_names = df["opponent_team"].map(TEAM_MAP).fillna("Unknown")
+        if "was_home" in df.columns:
+            venues = df["was_home"].map({True: "H", False: "A"})
+        else:
+            venues = pd.Series([""] * len(df), index=df.index)
+
+        fixtures = []
+        for ven, opp in zip(venues, opp_names):
+            if ven:
+                fixtures.append(f"{ven} vs {opp}")
+            else:
+                fixtures.append(str(opp))
+        df["Fixture"] = fixtures
+    else:
+        df["Fixture"] = ""
+
+    # Order: Points first, then GW, Fixture, %
+    df_view = df[["Points", "Gameweek", "Fixture", "% Contribution"]].copy()
     spark_data = df["Points"].tolist()
     return df_view, spark_data
 
@@ -570,6 +596,11 @@ def render_gw_breakdown(name: str, df_hist: pd.DataFrame, gw1: int, gw2: int):
         height=height,
     )
 
+    # Average % contribution per GW
+    if n_rows > 0:
+        avg_pct = 100.0 / n_rows
+        st.caption(f"Average share per GW in range: {avg_pct:.1f}%")
+
     # Sparkline
     fig = go.Figure()
     fig.add_trace(
@@ -587,10 +618,12 @@ def render_gw_breakdown(name: str, df_hist: pd.DataFrame, gw1: int, gw2: int):
         yaxis=dict(title="Pts"),
     )
     st.plotly_chart(fig, use_container_width=True)
-# =========================================
-# OVERLAY (SINGLE & COMPARE)
-# =========================================
-def show_overlay(player_names, gw1, gw2):
+
+
+# ==========================================================================
+# OVERLAY (SINGLE & COMPARE) — USING PLAYER IDs
+# ==========================================================================
+def show_overlay(player_ids, gw1, gw2):
     st.markdown(
         """
         <div style="background-color: rgba(0,0,0,0.05); padding: 15px; border-radius: 10px; margin-bottom: 20px;">
@@ -607,14 +640,15 @@ def show_overlay(player_names, gw1, gw2):
     contrib_dfs = []
     totals = []
     meta_rows = []
+    display_names = []
 
-    for name in player_names:
-        p_row = players[players["web_name"] == name].iloc[0]
-        pid = int(p_row["id"])
+    for pid in player_ids:
+        p_row = players_by_id[int(pid)]
+        name = p_row["display_name"]
         pos = p_row["Position"]
         team = p_row["Team"]
         price = float(p_row["Current Price"])
-        selected_pct = float(p_row["Selected By %"].round(2))
+        selected_pct = float(p_row["Selected By %"])
 
         history = weekly.get(str(pid), [])
         if not history:
@@ -627,6 +661,8 @@ def show_overlay(player_names, gw1, gw2):
         contrib_df, total_pts = build_points_contribution(df_hist_range, pos)
         contrib_dfs.append(contrib_df)
         totals.append(total_pts)
+        display_names.append(name)
+
         meta_rows.append(
             {
                 "Player": name,
@@ -651,32 +687,30 @@ def show_overlay(player_names, gw1, gw2):
     # FPL Points Contribution
     st.markdown("### 📊 FPL Points Contribution")
 
-    if len(player_names) == 1:
-        # Single player
+    row_height = 35
+    header_height = 40
+
+    if len(display_names) == 1:
+        # Single player: simple table with numeric columns, no scroll
         df_single = contrib_dfs[0].copy()
         df_single["Points"] = df_single["Points"].astype(int)
-
         n_rows = len(df_single)
-        row_height = 35
-        header_height = 40
         height = header_height + n_rows * row_height
-
         st.dataframe(df_single, width="stretch", hide_index=True, height=height)
-
     else:
         # Comparison table with "points (xx.x%)" and ⭐ for winner
         cats = contrib_dfs[0]["Category"].tolist()
         comp_display = pd.DataFrame({"Category": cats})
 
-        num_players = len(player_names)
+        num_players = len(display_names)
         points_matrix = [
             [contrib_dfs[i]["Points"].iloc[row_i] for i in range(num_players)]
             for row_i in range(len(cats))
         ]
         row_max = [max(row) for row in points_matrix]
 
-        for i, (name, contrib_df, total_pts) in enumerate(
-            zip(player_names, contrib_dfs, totals)
+        for idx, (name, contrib_df, total_pts) in enumerate(
+            zip(display_names, contrib_dfs, totals)
         ):
             formatted_cells = []
             pts_series = contrib_df["Points"].tolist()
@@ -688,39 +722,34 @@ def show_overlay(player_names, gw1, gw2):
                     pct = 0.0
 
                 cell_text = f"{pts_int} ({pct:.1f}%)"
+                # Gold star for winner in each row
                 if pts == row_max[row_i] and pts != 0:
                     cell_text += " ⭐"
                 formatted_cells.append(cell_text)
             comp_display[name] = formatted_cells
 
         n_rows = len(comp_display)
-        row_height = 35
-        header_height = 40
         height = header_height + n_rows * row_height
-
         st.dataframe(comp_display, width="stretch", hide_index=True, height=height)
 
     # Contribution bar chart
     st.markdown("### 📊 Contribution by Category")
-    bar_fig = build_contrib_bar(contrib_dfs, player_names)
+    bar_fig = build_contrib_bar(contrib_dfs, display_names)
     st.plotly_chart(bar_fig, use_container_width=True)
 
     # GW breakdowns
     st.markdown("### 📅 Points Breakdown by Gameweek")
-    if len(player_names) == 1:
-        name = player_names[0]
-        p_row = players[players["web_name"] == name].iloc[0]
-        pid = int(p_row["id"])
+    if len(display_names) == 1:
+        pid = player_ids[0]
+        p_row = players_by_id[int(pid)]
         history = weekly.get(str(pid), [])
         if history:
             df_hist = pd.DataFrame(history)
-            render_gw_breakdown(name, df_hist, gw1, gw2)
+            render_gw_breakdown(p_row["display_name"], df_hist, gw1, gw2)
     else:
-        cols = st.columns(len(player_names))
-        for col, name in zip(cols, player_names):
+        cols = st.columns(len(display_names))
+        for col, pid, name in zip(cols, player_ids, display_names):
             with col:
-                p_row = players[players["web_name"] == name].iloc[0]
-                pid = int(p_row["id"])
                 history = weekly.get(str(pid), [])
                 if not history:
                     st.info(f"No data for {name}.")
@@ -731,22 +760,22 @@ def show_overlay(player_names, gw1, gw2):
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-# =========================================
+# ==========================================================================
 # PAGE CONTENT
-# =========================================
+# ==========================================================================
 st.markdown("<div class='main-container'>", unsafe_allow_html=True)
 
 st.title("🔥 FPL Simple Analytics")
-st.write("Using live FPL data with GW-range value metrics and player analysis.")
+st.write("Using live FPL bootstrap data with cached weekly histories and player analysis.")
 
 # Overlay for view / comparison
-if st.session_state.view_mode == "single" and st.session_state.selected_player != "None":
-    show_overlay([st.session_state.selected_player], gw_start, gw_end)
+if st.session_state.view_mode == "single" and st.session_state.selected_player_id is not None:
+    show_overlay([st.session_state.selected_player_id], gw_start, gw_end)
 elif (
     st.session_state.view_mode == "compare"
-    and len(st.session_state.compare_players) >= 2
+    and len(st.session_state.compare_players_ids) >= 2
 ):
-    show_overlay(st.session_state.compare_players[:2], gw_start, gw_end)
+    show_overlay(st.session_state.compare_players_ids[:2], gw_start, gw_end)
 
 # Main table (hide when in overlay mode)
 if st.session_state.view_mode == "main":
@@ -759,7 +788,7 @@ if st.session_state.view_mode == "main":
         column_config={
             "Player": st.column_config.TextColumn(
                 "Player",
-                help="Player’s short name (web_name from FPL API)",
+                help="Full name and team",
             ),
             "Team": st.column_config.TextColumn(
                 "Team",
@@ -802,5 +831,3 @@ if st.session_state.view_mode == "main":
     )
 
 st.markdown("</div>", unsafe_allow_html=True)
-
-
