@@ -98,18 +98,18 @@ players = pd.DataFrame(bootstrap["elements"])
 teams = pd.DataFrame(bootstrap["teams"])[["id", "name", "short_name"]]
 events = pd.DataFrame(bootstrap["events"])[["id", "is_current", "finished"]]
 
-# Get all played gameweeks from weekly data
-played_gws = sorted(
-    set(
-        int(row["round"])
-        for hist in weekly.values()
-        for row in hist
-        if row.get("total_points") is not None
-    )
-)
+# ======================================================
+# PLAYED GAMEWEEK RANGE (LIVE, OFFICIAL)
+# ======================================================
+played_gws = events.loc[events["finished"] == True, "id"].astype(int).tolist()
+
+# Safety fallback (early season edge case)
+if not played_gws:
+    played_gws = events["id"].astype(int).tolist()
 
 min_gw = min(played_gws)
 max_gw = max(played_gws)
+
 
 # Default slider to current season span if unset/invalid
 if not isinstance(st.session_state.gw_slider, (tuple, list)) or len(st.session_state.gw_slider) != 2:
@@ -649,4 +649,3 @@ if st.session_state.view_mode == "main":
     )
 
 st.markdown("</div>", unsafe_allow_html=True)
-
