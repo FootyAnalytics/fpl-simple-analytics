@@ -267,14 +267,14 @@ with st.spinner("Calculating GW-range points (live)…"):
 
 table = filtered[
     [
-        "display_name",
+        "web_name",
         "Team",
         "Position",
         "Points (GW Range)",
         "Current Price",
         "Selected By %",
     ]
-].rename(columns={"display_name": "Player"})
+].rename(columns={"web_name": "Player"})
 
 table["Points Per Million"] = table["Points (GW Range)"] / table["Current Price"]
 
