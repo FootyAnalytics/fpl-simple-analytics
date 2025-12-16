@@ -649,3 +649,4 @@ if st.session_state.view_mode == "main":
     )
 
 st.markdown("</div>", unsafe_allow_html=True)
+
